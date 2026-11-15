@@ -1,7 +1,7 @@
 """Measured slider responses: the shapes the pipeline takes from Lightroom bakes.
 
-Tone sliders are tables of neutral curves at the amounts that were baked; other
-amounts are interpolated across the diagonal so clip points move smoothly.
+Tone sliders are tables of neutral curves at the amounts that were baked; between
+them the clip points move linearly and the shape in between is blended.
 Exposure is a two-parameter shoulder. Vibrance is a chroma-gain table around a
 pivot between each color's min and max channel.
 """
@@ -47,11 +47,14 @@ def test_curve_family_is_identity_at_zero_and_exact_at_measured_amounts():
     np.testing.assert_array_equal(fam.apply(RAMP, 0), RAMP)
 
 
-def test_curve_family_interpolates_across_the_diagonal_so_clip_points_move():
+def test_curve_family_moves_clip_points_between_amounts():
     y = clip_at_half().curve(50)
     first_white = X[np.argmax(y >= 1 - 1e-9)]
-    assert 0.5 < first_white < 0.9  # a straight blend would only reach white at x = 1
+    assert 0.7 < first_white < 0.8  # halfway between 1 (identity) and 0.5; a plain blend never clips
     assert is_monotonic(y) and y[0] == pytest.approx(0) and y[-1] == pytest.approx(1)
+    crush = CurveFamily({-50.0: np.clip((X - 0.1) / 0.9, 0, 1), -100.0: np.clip((X - 0.3) / 0.7, 0, 1)})
+    last_black = X[np.flatnonzero(crush.curve(-75) <= 1e-9).max()]
+    assert 0.17 < last_black < 0.23
 
 
 def test_curve_family_clamps_to_its_measured_range():

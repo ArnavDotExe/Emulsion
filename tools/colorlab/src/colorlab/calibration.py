@@ -3,12 +3,15 @@
     python -m colorlab.calibration presets out/cal-presets
     python -m colorlab.bake kit out/cal-presets out/cal-kit          # then Lightroom, see the kit README
     python -m colorlab.bake collect <exports> out/cal-kit out/cal-luts
+    python -m colorlab.calibration response out/cal-luts --out src/colorlab/data/lightroom_response.json
     python -m colorlab.calibration fit out/cal-luts --json out/cal-fit.json
 
-Each calibration preset moves exactly one slider, so each ``K_*`` strength in
-``colorlab.pipeline`` is fitted only from the bakes that exercise it. The fit also
-reports the remaining error per preset, which shows where a stage's *shape* (not
-just its strength) differs from Lightroom.
+Each calibration preset moves exactly one slider. ``response`` measures the
+shapes of exposure, the tone sliders, the parametric curve and vibrance straight
+from their bakes (``colorlab.response``). ``fit`` then fits each remaining
+``K_*`` strength in ``colorlab.pipeline`` only from the bakes that exercise it,
+and reports the remaining error per preset, which shows where a stage's *shape*
+(not just its strength) still differs from Lightroom.
 """
 from __future__ import annotations
 
@@ -24,7 +27,8 @@ from pathlib import Path
 
 import numpy as np
 
-from . import pipeline
+from . import colorspace as cs
+from . import pipeline, response
 from .errors import ColorlabError
 from .lut import Lut3D, apply_lut, read_cube
 from .metrics import delta_e_2000, srgb_to_lab
@@ -33,14 +37,10 @@ from .preset import parse_preset
 
 CAL_GROUP = "FilmSim Calibration"
 
-#: search range for each strength; tone-curve bounds keep the curves monotonic
+#: search range for each strength
 K_BOUNDS: dict[str, tuple[float, float]] = {
     "K_TEMPERATURE": (0.0, 0.05),
     "K_TINT": (0.0, 0.05),
-    "K_CONTRAST": (0.0, 2.0),
-    "K_WHITES": (0.0, 0.95),
-    "K_BLACKS": (0.0, 0.95),
-    "K_PARAMETRIC": (0.0, 0.115),
     "K_HUE": (0.0, 1.0),
     "K_LUMINANCE": (0.0, 1.5),
     "K_GRADE_SAT": (0.0, 1.0),
@@ -69,17 +69,17 @@ def _sweep(label: str, key: str, values: Sequence[float], fits: tuple[str, ...] 
 
 def _build() -> tuple[Variant, ...]:
     out: list[Variant] = []
-    out += _sweep("Exposure", "Exposure2012", (-1, 1))
-    for label, key, k in (("Contrast", "Contrast2012", "K_CONTRAST"), ("Whites", "Whites2012", "K_WHITES"),
-                          ("Blacks", "Blacks2012", "K_BLACKS")):
-        out += _sweep(label, key, (-100, -50, 50, 100), (k,))
+    # Exposure, tone, parametric and vibrance shapes are measured (`response`), at several amounts.
+    out += _sweep("Exposure", "Exposure2012", (-2, -1, -0.5, 0.5, 1, 2))
+    for label, key in (("Contrast", "Contrast2012"), ("Whites", "Whites2012"), ("Blacks", "Blacks2012")):
+        out += _sweep(label, key, (-100, -50, -25, 25, 50, 100))
     # Lightroom ignores an incremental temperature or tint that comes without its partner.
     out += _sweep("Temperature", "IncrementalTemperature", (-100, -50, 50, 100), ("K_TEMPERATURE",),
                   {"WhiteBalance": "Custom", "IncrementalTint": "0"})
     out += _sweep("Tint", "IncrementalTint", (-100, -50, 50, 100), ("K_TINT",),
                   {"WhiteBalance": "Custom", "IncrementalTemperature": "0"})
     for region in ("Shadows", "Darks", "Lights", "Highlights"):
-        out += _sweep(f"Parametric {region}", f"Parametric{region}", (-100, 100), ("K_PARAMETRIC",))
+        out += _sweep(f"Parametric {region}", f"Parametric{region}", (-100, -50, 50, 100))
     custom = {"ToneCurveName2012": "Custom"}
     for name, key, pts in (
         ("Master S", "ToneCurvePV2012", ((0, 0), (64, 44), (192, 212), (255, 255))),
@@ -96,7 +96,7 @@ def _build() -> tuple[Variant, ...]:
         out += _sweep(f"HSL Sat {b}", f"SaturationAdjustment{b}", (-100, 100))
         out += _sweep(f"HSL Lum {b}", f"LuminanceAdjustment{b}", (-100, 100), ("K_LUMINANCE",))
     out += _sweep("Saturation", "Saturation", (-100, -50, 50, 100))
-    out += _sweep("Vibrance", "Vibrance", (-100, -50, 50, 100))
+    out += _sweep("Vibrance", "Vibrance", (-100, -50, -25, 25, 50, 100))
     zones = (("Shadows", "SplitToningShadowHue", "SplitToningShadowSaturation", "ColorGradeShadowLum"),
              ("Midtones", "ColorGradeMidtoneHue", "ColorGradeMidtoneSat", "ColorGradeMidtoneLum"),
              ("Highlights", "SplitToningHighlightHue", "SplitToningHighlightSaturation", "ColorGradeHighlightLum"),
@@ -245,6 +245,146 @@ def fit(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS, grid_size: 
     return report
 
 
+# --- measured responses -------------------------------------------------------------------------------
+
+_VIBRANCE_GRID = 17
+_PIVOTS = np.linspace(0.0, 1.0, 21)
+
+
+@dataclass
+class ResponseReport:
+    response: response.Response
+    measured: list[str] = field(default_factory=list)  # sliders measured from the bakes
+    kept: list[str] = field(default_factory=list)  # sliders without bakes: taken from the base response
+
+
+def _neutral(lut: Lut3D) -> np.ndarray:
+    """Lightroom's response to a neutral ramp, at ``response.X`` (monotonic, 0-1)."""
+    y = apply_lut(lut, np.repeat(response.X[:, None], 3, axis=1)).astype(np.float64).mean(axis=1)
+    return np.clip(np.maximum.accumulate(y), 0.0, 1.0)
+
+
+def _fit_exposure(curves: Mapping[float, np.ndarray]) -> response.ExposureShoulder:
+    """Grid search of the exposure shoulder (p) and strength over every baked exposure."""
+    x = response.X[:-1]
+    strengths = np.linspace(0.5, 1.5, 201)
+    best = (np.inf, 0.0, 0.0)
+    for p in np.linspace(0.5, 8.0, 151):
+        s = p * ((1 - x) ** (-1 / p) - 1)
+        err = np.zeros_like(strengths)
+        for ev, y in curves.items():
+            pred = 1 - (1 + s[None, :] * 2.0 ** (strengths[:, None] * ev) / p) ** -p
+            err += np.abs(pred - y[None, :-1]).mean(axis=1)
+        i = int(np.argmin(err))
+        if err[i] < best[0]:
+            best = (float(err[i]), float(p), float(strengths[i]))
+    return response.ExposureShoulder(shoulder=round(best[1], 4), strength=round(best[2], 4))
+
+
+def _to_working(srgb: np.ndarray) -> np.ndarray:
+    lin = cs.convert(cs.decode(np.clip(srgb, 0.0, 1.0), cs.Transfer.SRGB), cs.SRGB, pipeline.WORKING)
+    return np.clip(cs.encode(np.maximum(lin, 0.0), pipeline.WORKING_TRANSFER), 0.0, 1.0)
+
+
+def _from_working(enc: np.ndarray) -> np.ndarray:
+    lin = cs.convert(cs.decode(enc, pipeline.WORKING_TRANSFER), pipeline.WORKING, cs.SRGB)
+    return np.clip(cs.encode(lin, cs.Transfer.SRGB), 0.0, 1.0)
+
+
+def _vibrance_tables(knots: np.ndarray, c: np.ndarray, bw: np.ndarray, d: np.ndarray, delta: np.ndarray,
+                     ok: np.ndarray):
+    """Chroma gain per knot (median of per-color gains) and per-band factors on top of it.
+
+    ``ok`` marks the colors to learn from: colored, and not clipped in the bake.
+    """
+    ok = ok & (c > 0.01)
+    g = np.sum(delta * d, axis=1) / np.maximum(np.sum(d * d, axis=1), 1e-12)  # least-squares gain per color
+    table = np.array([np.median(g[m]) if (m := ok & (np.abs(c - k) < 0.075)).any() else np.nan for k in knots])
+    good = ~np.isnan(table)
+    table = np.interp(knots, knots[good], table[good]) if good.any() else np.ones_like(knots)
+    base = np.interp(c, knots, table) - 1.0
+    a = bw[ok] * base[ok, None]
+    bands, *_ = np.linalg.lstsq(a, g[ok] - 1.0, rcond=None)
+    bands = np.where(np.abs(a).sum(axis=0) > 1e-6, bands, 1.0)
+    return table, bands
+
+
+def _measure_vibrance(luts: Mapping[float, Lut3D], base: response.VibranceResponse) -> response.VibranceResponse:
+    grid = Lut3D.identity(_VIBRANCE_GRID).table.reshape(-1, 3).astype(np.float64)
+    wi = _to_working(grid)
+    h, c = pipeline._hue(wi)
+    bw = pipeline._band_weights(h)
+    knots = np.asarray(base.chroma)
+    baked = {a: apply_lut(lut, grid).astype(np.float64) for a, lut in luts.items()}
+    worked = {a: _to_working(v) for a, v in baked.items()}
+    unclipped = {a: np.all((v > 1e-4) & (v < 1 - 1e-4), axis=1) for a, v in baked.items()}
+    gains, bands, pivots = {}, {}, list(base.pivots)
+    for side, amounts in ((0, [a for a in baked if a < 0]), (1, [a for a in baked if a > 0])):
+        if not amounts:
+            continue
+        best = None
+        for alpha in _PIVOTS:
+            pivot = wi.min(axis=1) + alpha * c
+            d = wi - pivot[:, None]
+            tables, err = {}, 0.0
+            for a in amounts:
+                tab, fac = _vibrance_tables(knots, c, bw, d, worked[a] - pivot[:, None], unclipped[a])
+                gain = 1.0 + (np.interp(c, knots, tab) - 1.0) * (bw @ fac)
+                ours = _from_working(pivot[:, None] + np.maximum(gain, 0.0)[:, None] * d)
+                err += float(delta_e_2000(srgb_to_lab(ours), srgb_to_lab(baked[a])).mean())
+                tables[a] = (tab, fac)
+            if best is None or err < best[0]:
+                best = (err, float(alpha), tables)
+        pivots[side] = round(best[1], 4)
+        for a, (tab, fac) in best[2].items():
+            gains[a], bands[a] = tab, fac
+    for a in base.gains:  # keep the base's amounts on a side that was not baked
+        if not any(np.sign(a) == np.sign(b) for b in baked):
+            gains[a], bands[a] = base.gains[a], base.bands[a]
+    return response.VibranceResponse(tuple(knots), (pivots[0], pivots[1]), gains, bands)
+
+
+def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS,
+                     base: response.Response | None = None) -> ResponseReport:
+    """Measure exposure, tone, parametric and vibrance responses from the bakes in ``lut_dir``.
+
+    Sliders without any bake keep their curves from ``base`` (default: the shipped response).
+    """
+    base = base if base is not None else response.load()
+    luts = {v.name: read_cube(p) for v in variants if (p := Path(lut_dir) / f"{v.name}.cube").is_file()}
+    if not luts:
+        raise ColorlabError(f"no calibration bakes (.cube) found in {lut_dir}")
+
+    def solo(key: str) -> dict[float, Lut3D]:
+        return {float(v.settings[key]): luts[v.name] for v in variants
+                if set(v.settings) == {key} and not v.curves and v.name in luts}
+
+    report = ResponseReport(response=base)
+    tone = {}
+    for key in response.TONE_KEYS:
+        found = solo(key)
+        if found:
+            tone[key] = response.CurveFamily({a: _neutral(lut) for a, lut in found.items()})
+            report.measured.append(key)
+        else:
+            tone[key] = base.tone[key]
+            report.kept.append(key)
+    exposure = base.exposure
+    if found := solo("Exposure2012"):
+        exposure = _fit_exposure({a: _neutral(lut) for a, lut in found.items()})
+        report.measured.append("Exposure2012")
+    else:
+        report.kept.append("Exposure2012")
+    vibrance = base.vibrance
+    if found := solo("Vibrance"):
+        vibrance = _measure_vibrance(found, base.vibrance)
+        report.measured.append("Vibrance")
+    else:
+        report.kept.append("Vibrance")
+    report.response = response.Response(exposure=exposure, tone=tone, vibrance=vibrance)
+    return report
+
+
 # --- command line ------------------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
@@ -258,8 +398,19 @@ def main(argv: list[str] | None = None) -> int:
     fp.add_argument("lut_dir", type=Path)
     fp.add_argument("--grid", type=int, default=17, help="sample grid size per axis (default 17)")
     fp.add_argument("--json", type=Path, help="also write the report as JSON")
+    rp = sub.add_parser("response", help="measure exposure/tone/parametric/vibrance shapes from the bakes")
+    rp.add_argument("lut_dir", type=Path)
+    rp.add_argument("--out", type=Path, required=True,
+                    help="response file to write (the shipped one is src/colorlab/data/lightroom_response.json)")
     args = parser.parse_args(argv)
     try:
+        if args.command == "response":
+            measured = measure_response(args.lut_dir)
+            response.save(measured.response, args.out)
+            print(f"measured: {', '.join(measured.measured) or '-'}")
+            print(f"kept (no bakes): {', '.join(measured.kept) or '-'}")
+            print(f"wrote {args.out}")
+            return 0
         if args.command == "presets":
             variants = VARIANTS
             if args.only_missing is not None:

@@ -226,11 +226,11 @@ def write_neutral_bakes(lut_dir, variants, curve_for):
 def test_measure_response_reads_tone_curves_from_neutral_ramps(tmp_path):
     whites = solo("Whites2012")
     luts = write_neutral_bakes(tmp_path / "luts", whites,
-                               lambda v: (lambda x: x ** (1 - float(v.settings["Whites2012"]) / 400)))
+                               lambda v: (lambda x: x + float(v.settings["Whites2012"]) / 400 * x * (1 - x)))
     report = measure_response(luts)
     fam = report.response.tone["Whites2012"]
     assert set(fam.curves) == {float(v.settings["Whites2012"]) for v in whites}
-    np.testing.assert_allclose(fam.curves[100.0], response.X ** 0.75, atol=2e-3)
+    np.testing.assert_allclose(fam.curves[100.0], response.X + 0.25 * response.X * (1 - response.X), atol=2e-3)
     assert "Whites2012" in report.measured
     assert "Blacks2012" in report.kept  # no bakes: the shipped curves stay
     np.testing.assert_allclose(report.response.tone["Blacks2012"].curves[100.0],

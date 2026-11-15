@@ -306,8 +306,16 @@ def test_vibrance_boosts_muted_colors_relatively_more():
 
 def test_vibrance_plus_100_boosts_muted_colors_but_barely_moves_vivid_ones():
     # Lightroom bakes: chroma gain ~1.9 at chroma 0.1, ~1.05 at chroma 0.6 and above.
-    assert chroma(saturation_vibrance(MUTED, vibrance=100)) / chroma(MUTED) > 1.5
+    muted_green = np.array([0.45, 0.55, 0.47])
+    assert chroma(saturation_vibrance(muted_green, vibrance=100)) / chroma(muted_green) > 1.5
     assert chroma(saturation_vibrance(RED, vibrance=100)) / chroma(RED) < 1.2
+
+
+def test_vibrance_protects_skin_tones():
+    # Lightroom bakes: muted reds and oranges get a smaller boost than other hues.
+    skin, muted_green = MUTED, np.array([0.45, 0.55, 0.47])
+    skin_gain = chroma(saturation_vibrance(skin, vibrance=100)) / chroma(skin)
+    assert 1.0 < skin_gain < chroma(saturation_vibrance(muted_green, vibrance=100)) / chroma(muted_green)
 
 
 def test_vibrance_minus_100_keeps_some_color():
