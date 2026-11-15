@@ -424,3 +424,40 @@ def test_render_lut_of_empty_preset_is_identity():
     lut = render_lut(parse_preset(make_xmp()), size=9)
     assert lut.size == 9
     np.testing.assert_allclose(lut.table, Lut3D.identity(9).table, atol=1e-5)
+
+
+# --- tone curves keep hue (curve on max and min channel, middle keeps its place) -----------------
+
+SATURATED = np.array([[0.9, 0.35, 0.1], [0.15, 0.6, 0.85], [0.7, 0.2, 0.55]])
+
+
+def _place(rgb):
+    """Where the middle channel sits between the min and max channel (the hexcone hue)."""
+    s = np.sort(rgb, axis=-1)
+    return (s[..., 1] - s[..., 0]) / (s[..., 2] - s[..., 0])
+
+
+@pytest.mark.parametrize("stage", [
+    lambda e: exposure(e, 1.0),
+    lambda e: exposure(e, -1.0),
+    lambda e: tone(e, contrast=60),
+    lambda e: tone(e, whites=100, blacks=-50),
+    lambda e: parametric_curve(e, darks=80, lights=-60),
+    lambda e: apply_curves(e, master=((0, 0), (64, 40), (192, 220), (255, 255))),
+])
+def test_tone_stages_keep_each_colors_hue(stage):
+    out = stage(SATURATED)
+    np.testing.assert_allclose(_place(out), _place(SATURATED), atol=1e-9)
+    assert np.all(np.argsort(out, axis=-1) == np.argsort(SATURATED, axis=-1))
+
+
+def test_hue_preserving_tone_still_maps_neutrals_through_the_curve():
+    gray = np.full((1, 3), 0.4)
+    color = np.array([[0.4, 0.4, 0.4]])
+    np.testing.assert_allclose(tone(gray, whites=100), tone(color, whites=100))
+    np.testing.assert_allclose(exposure(gray, 1.0)[0, 0], exposure(np.array([[0.4, 0.1, 0.0]]), 1.0)[0, 0])
+
+
+def test_per_channel_curves_still_act_per_channel():
+    out = apply_curves(SATURATED, red=((0, 0), (128, 180), (255, 255)))
+    np.testing.assert_allclose(out[:, 1:], SATURATED[:, 1:])
