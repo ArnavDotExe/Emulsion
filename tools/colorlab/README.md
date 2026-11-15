@@ -1,6 +1,6 @@
 # colorlab
 
-The color science behind Emulsion, written as plain, tested Python. It is the
+The color science behind FilmSim, written as plain, tested Python. It is the
 reference the Android GPU engine has to match.
 
 ## Modules
@@ -27,7 +27,7 @@ python -m colorlab.bake collect <exports> out/bake-kit looks/private/lightroom
 The LUTs capture a preset's global color: white balance, exposure, tone curves, HSL,
 color grading, profiles and looks, saturation. Grain, vignette, sharpening, noise reduction
 and local tone (highlights/shadows, clarity, texture, dehaze) are zeroed for the bake,
-because they'd smear the Hald image. The Emulsion engine applies those itself.
+because they'd smear the Hald image. The FilmSim engine applies those itself.
 
 ## Calibrating the pipeline against Lightroom
 

@@ -31,7 +31,7 @@ from .metrics import delta_e_2000, srgb_to_lab
 from .pipeline import BANDS
 from .preset import parse_preset
 
-CAL_GROUP = "Emulsion Calibration"
+CAL_GROUP = "FilmSim Calibration"
 
 #: search range for each strength; tone-curve bounds keep the curves monotonic
 K_BOUNDS: dict[str, tuple[float, float]] = {
@@ -132,7 +132,7 @@ _BASE_ATTRS = {
 
 def variant_xmp(v: Variant) -> str:
     """A complete Lightroom preset (.xmp) for one calibration variant."""
-    uid = uuid.uuid5(uuid.NAMESPACE_URL, f"emulsion-calibration:{v.name}").hex.upper()
+    uid = uuid.uuid5(uuid.NAMESPACE_URL, f"filmsim-calibration:{v.name}").hex.upper()
     attrs = {**_BASE_ATTRS, "UUID": uid, **v.settings}
     attr_xml = "\n".join(f'    crs:{k}="{escape(str(val))}"' for k, val in attrs.items())
     curves = "".join(
@@ -141,7 +141,7 @@ def variant_xmp(v: Variant) -> str:
         + f"    </rdf:Seq>\n   </crs:{key}>\n"
         for key, pts in v.curves.items()
     )
-    return f"""<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Emulsion colorlab">
+    return f"""<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="FilmSim colorlab">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
     xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
