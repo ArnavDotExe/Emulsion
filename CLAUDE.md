@@ -115,6 +115,13 @@ Lightroom quirks:
   - Temperature −100 13.4, Temperature +100 6.3. Lightroom isn't purely per-channel on saturated colors.
   - Exposure +2 4.9, Whites +100 4.2.
   - Saturation −50 3.0. Saturation is still a formula and could be measured the same way.
+  - These gaps share a cause: colors pushed past 1. Our per-channel curves clip each channel and
+    shift hue, while Lightroom keeps hue and rolls bright saturated colors toward white. On those
+    bakes the error sits almost entirely in colors at 1: Exposure +2 is 6.8 there vs 3.1 elsewhere,
+    Whites +100 5.3 vs 1.2. A shared over-range/gamut-rolloff stage, fitted from the existing
+    bakes, is the next global fix.
+  - White balance as per-channel stops in Bradford cone space, fitted by ΔE, lowers the mean over
+    the 12 WB bakes from 3.88 to 3.01. Refit it after the over-range stage exists (`out/calib/wb_basis.py`).
 - Then:
   - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,
     noise reduction). The worst presets are dominated by these.
