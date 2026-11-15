@@ -214,8 +214,12 @@ Guarantees:
 - The shoulder takes one EV per channel, and a channel with 0 stops passes through exactly.
 - `measure_response` recovers known per-channel stops from synthetic working-space bakes.
 
-Known gaps: Temperature/Tint ±25 are in the kit but not baked yet (`out/cal-redo4-kit`, 4 presets).
-Temperature −100 (13.4) and ±100 still miss on saturated colors. Lightroom's white balance isn't
+Re-bake of Temperature/Tint ±25 (`out/cal-redo4-kit`, all 147 bakes present):
+- Measured stops: Temperature +25 R 0.57 / G 0.46 / B 0.00, −25 R 0.04 / G 0.14 / B 0.67.
+- Those bakes now score 0.7–2.1 ΔE, and the mean over 147 bakes is **2.22**.
+- The 44 presets are unchanged (median 3.18, mean 4.39); blending between 0 and ±50 was already close.
+
+Known gaps: Temperature −100 (13.4) and ±100 still miss on saturated colors. Lightroom's white balance isn't
 purely per-channel there, and the sRGB output clips.
 
 ## Coverage and known gaps

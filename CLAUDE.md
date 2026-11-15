@@ -101,7 +101,7 @@ Lightroom quirks:
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
 - Accuracy against the user's 44 private presets: median ΔE2000 3.18, mean 4.39.
-- `out/cal-redo4-kit` (Temperature/Tint ±25) is waiting on a Lightroom bake.
+- All 147 calibration bakes are collected (mean 2.22 ΔE); no re-bake is pending.
 - Biggest single-slider gaps:
   - Temperature −100 13.4, Temperature +100 6.3. Lightroom isn't purely per-channel on saturated colors.
   - Exposure +2 4.9, Whites +100 4.2.
