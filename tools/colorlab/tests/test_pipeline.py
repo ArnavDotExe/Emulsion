@@ -36,7 +36,7 @@ from conftest import curve_xml, make_xmp
 
 RAMP = np.linspace(0.0, 1.0, 257)
 GRAYS = np.repeat(RAMP[:, None], 3, axis=1)
-RED, BLUE = np.array([0.8, 0.15, 0.1]), np.array([0.1, 0.2, 0.8])
+RED, BLUE = np.array([0.8, 0.15, 0.15]), np.array([0.1, 0.2, 0.8])  # RED sits on the red band's center
 MUTED = np.array([0.55, 0.45, 0.42])
 
 
@@ -61,7 +61,7 @@ def test_spline_passes_through_control_points():
     np.testing.assert_allclose(f(xs), np.array([p[1] for p in pts]) / 255, atol=1e-12)
 
 
-@pytest.mark.parametrize("pts", [((0, 0), (255, 255)), ((0, 20), (255, 240)), ((0, 10), (100, 110), (255, 255))])
+@pytest.mark.parametrize("pts", [((0, 0), (255, 255)), ((0, 20), (255, 240)), ((0, 0), (85, 51), (255, 153))])
 def test_spline_of_collinear_points_is_a_straight_line(pts):
     (x0, y0), (x1, y1) = pts[0], pts[-1]
     expected = (y0 + (RAMP * 255 - x0) * (y1 - y0) / (x1 - x0)) / 255
@@ -108,9 +108,9 @@ def test_temperature_warms_and_tint_adds_magenta_while_keeping_brightness():
     assert cool[0] < gray[0] and cool[2] > gray[2]
     magenta = white_balance(gray, temperature=0, tint=50)
     assert magenta[1] < gray[1] and magenta[0] > gray[0]
+    y = cs.PROPHOTO_RGB.rgb_to_xyz[1]  # working-space luminance
     for out in (warm, cool, magenta):
-        assert luma(cs.convert(out, cs.PROPHOTO_RGB, cs.SRGB)) == pytest.approx(
-            luma(cs.convert(gray, cs.PROPHOTO_RGB, cs.SRGB)), rel=1e-6)
+        assert out @ y == pytest.approx(gray @ y, rel=1e-9)
 
 
 def test_exposure_scales_linear_light_by_powers_of_two():
