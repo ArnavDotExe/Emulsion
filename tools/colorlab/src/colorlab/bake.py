@@ -156,10 +156,11 @@ def make_sidecar_xmp(xmp_text: str) -> str:
 
 # --- Hald TIFFs ------------------------------------------------------------------------------
 
-def write_hald_tiff(path: str | Path, level: int = DEFAULT_LEVEL, xmp: str | None = None) -> None:
+def write_rgb_tiff16(path: str | Path, img: np.ndarray, xmp: str | None = None) -> None:
+    """Write a 0-1 RGB image as a 16-bit TIFF, optionally with an embedded XMP packet (tag 700)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = np.round(hald_identity(level).astype(np.float64) * 65535).astype(np.uint16)
+    data = np.round(np.clip(np.asarray(img, dtype=np.float64), 0.0, 1.0) * 65535).astype(np.uint16)
     extratags = []
     if xmp is not None:
         payload = xmp.encode("utf-8")
@@ -167,16 +168,24 @@ def write_hald_tiff(path: str | Path, level: int = DEFAULT_LEVEL, xmp: str | Non
     tifffile.imwrite(path, data, photometric="rgb", extratags=extratags)
 
 
-def read_hald_tiff(path: str | Path) -> Lut3D:
+def read_rgb_tiff(path: str | Path) -> np.ndarray:
+    """An 8- or 16-bit RGB(A) TIFF as float64 RGB in 0-1 (alpha dropped)."""
     data = tifffile.imread(path)
     if data.ndim == 3 and data.shape[2] == 4:
         data = data[..., :3]  # drop alpha
     if data.dtype == np.uint16:
-        img = data / 65535.0
-    elif data.dtype == np.uint8:
-        img = data / 255.0
-    else:
-        raise LutFormatError(f"{path}: Hald TIFF must be 8- or 16-bit integer RGB, got {data.dtype}")
+        return data / 65535.0
+    if data.dtype == np.uint8:
+        return data / 255.0
+    raise LutFormatError(f"{path}: TIFF must be 8- or 16-bit integer RGB, got {data.dtype}")
+
+
+def write_hald_tiff(path: str | Path, level: int = DEFAULT_LEVEL, xmp: str | None = None) -> None:
+    write_rgb_tiff16(path, hald_identity(level), xmp)
+
+
+def read_hald_tiff(path: str | Path) -> Lut3D:
+    img = read_rgb_tiff(path)
     try:
         return lut_from_hald(img)
     except LutFormatError as exc:

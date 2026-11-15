@@ -74,6 +74,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `pipeline` | Reference model of a preset's global color in Lightroom order; `render()`, `render_lut()` |
 | `response` | Lightroom's **measured** slider shapes (exposure shoulder, white-balance stops per channel, tone and parametric curves per amount, vibrance gains), stored in `data/lightroom_response.json` |
 | `calibration` | 147 single-slider calibration presets; `response` measures shapes from bakes, `fit` fits the remaining `K_*` strengths |
+| `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `collect` checks and copies the exports |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 
@@ -92,6 +93,11 @@ python -m colorlab.calibration response out/cal-luts --out src/colorlab/data/lig
 python -m colorlab.calibration fit out/cal-luts --json out/cal-fit.json   # then copy K_* into pipeline.py
 ```
 
+Spatial loop (task 6b): `python -m colorlab.spatial_calibration kit out/spatial-kit`, import
+`images/` into Lightroom and export per the kit README, then
+`python -m colorlab.spatial_calibration collect <exports> out/spatial-kit out/spatial-exports`.
+Each export is compared with its chart's `Spatial Identity` export.
+
 Lightroom quirks:
 - It ignores a lone `IncrementalTemperature` or `IncrementalTint`; set both, with `WhiteBalance=Custom`.
 - It ignores a lone channel curve; list all four curves, using identity for the unused ones.
@@ -102,12 +108,15 @@ Lightroom quirks:
   pipeline) is done and calibrated against 143 single-slider bakes.
 - Accuracy against the user's 44 private presets: median ΔE2000 3.18, mean 4.39.
 - All 147 calibration bakes are collected (mean 2.22 ΔE); no re-bake is pending.
+- 6b has started. The spatial calibration kit is built (`out/spatial-kit`, 70 images) and is waiting
+  for the user to export it from Lightroom. Next: `collect`, then measure each effect and model it.
 - Biggest single-slider gaps:
   - Temperature −100 13.4, Temperature +100 6.3. Lightroom isn't purely per-channel on saturated colors.
   - Exposure +2 4.9, Whites +100 4.2.
   - Saturation −50 3.0. Saturation is still a formula and could be measured the same way.
 - Then:
-  - 6b: spatial effects (grain, vignette, highlights/shadows, clarity). The worst presets are dominated by these.
+  - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,
+    noise reduction). The worst presets are dominated by these.
   - 7: check against the Fuji DNG presets' embedded Lightroom previews.
   - 8: the `.fsim.json` look format.
   - 9: the CLI.

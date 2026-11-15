@@ -244,6 +244,36 @@ can't measure a white-balance channel never silently ships "0 stops".
   `measure_response` replaces them with the base and records a warning.
 - Results: the public suite passes at 97.49% coverage; the private accuracy suite passes unchanged.
 
+## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
+
+Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one
+spatial slider. I export them all at once, and `collect` tells me which exports are missing,
+unedited or resized, so the measurements start from clean data.
+
+Amounts come from what the private presets use:
+- Highlights/Shadows/Clarity/Texture/Dehaze: ±10 to ±40, swept at ±25/±50/±100.
+- Grain: 20–40 at size 25.
+- Vignette: about −20, Style 1.
+- Sharpness: 25 at radius 1.0.
+- Noise reduction: 15–40.
+
+| # | What is guaranteed | Test (`tests/test_spatial_calibration.py`) | Result |
+|---|---|---|---|
+| 1 | Three full-frame charts in 0–1 with region maps; flat regions are exactly uniform | `test_every_chart_is_a_full_frame_image_in_range`, `test_regions_lie_inside_the_frame_and_flat_regions_are_uniform` | PASS |
+| 2 | `scene` holds flat levels from <0.05 to >0.9, gratings, a ramp and colors; `levels` holds flat bands and deterministic luma/color noise; `checker` puts all four grays at every radius | `test_scene_*`, `test_levels_*`, `test_checker_*` | PASS |
+| 3 | 70 uniquely named variants, with an identity baseline per chart; each slider swept at its amounts; each family on the right chart | `test_variant_names_*`, `test_every_chart_has_an_identity_baseline`, `test_each_spatial_slider_is_swept`, `test_local_tone_variants_*` | PASS |
+| 4 | Grain, vignette and sharpening variants set their whole slider family (Lightroom may ignore a lone member); vignette shape and grain size/roughness are swept | `test_grain_vignette_and_sharpening_*`, `test_vignette_shape_*` | PASS |
+| 5 | The kit writes a preset (group "FilmSim Spatial Calibration") and a 16-bit chart TIFF per variant. The TIFF embeds the settings as a sidecar with `crs:AlreadyApplied="False"`. The kit refuses a non-empty folder | `test_kit_*` | PASS |
+| 6 | `collect` copies edited exports, reports missing ones and unedited non-baseline ones, and rejects resized exports | `test_collect_*` | PASS |
+| 7 | The CLI `kit`/`collect` summaries; errors exit 1 | `test_cli_*` | PASS |
+
+- RED `012dd16`: collection failed with `ModuleNotFoundError: colorlab.spatial_calibration`.
+- GREEN: 28 passed. Full suite (public and private): 351 passed, 98% coverage (`spatial_calibration` 99%).
+- Refactors: `bake.write_rgb_tiff16` and `bake.read_rgb_tiff` are now shared with the Hald
+  helpers, and `calibration.variant_xmp` takes a `group`. The bake and calibration tests still pass.
+- Open question: Lightroom's local-tone radii may scale with image size. The charts are 1536×1024;
+  a second size may be needed once the first measurements are in.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

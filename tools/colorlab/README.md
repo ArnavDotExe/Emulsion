@@ -14,6 +14,7 @@ reference the Android GPU engine has to match.
 | `pipeline` | Reference model of a preset's global color sliders in Lightroom order: white balance, exposure, contrast/whites/blacks, parametric and point curves, HSL, color grading, look table, saturation/vibrance, B&W mixer. `render()` an image or `render_lut()` a LUT |
 | `calibration` | 147 single-slider Lightroom presets for baking; measures slider shapes from their bakes and fits each remaining `pipeline` strength |
 | `response` | Lightroom's measured slider responses (exposure shoulder, white-balance stops per channel, tone and parametric curves per amount, vibrance gains), shipped in `data/lightroom_response.json` |
+| `spatial_calibration` | Spatial calibration kit: one-slider chart images (with embedded Lightroom settings) for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `collect` checks the exports |
 | `metrics` | CIE Lab (D65) from sRGB and CIEDE2000 color difference |
 | `bake` | Turn presets into exact LUTs through Lightroom: a kit of bake presets (spatial and geometry settings zeroed) plus same-named 16-bit Hald TIFFs, then `.cube` LUTs from the exports |
 | `errors` | `ColorlabError` and its subclasses; every message names the file or setting |
@@ -46,6 +47,22 @@ without bakes keep the shipped curves. `fit` then fits each remaining strength o
 bakes that use it. It prints the suggested `K_*` values and the remaining error for each preset.
 A large remaining error means that stage's shape, not just its strength, differs from Lightroom.
 To re-bake only what is missing: `calibration presets <new folder> --only-missing out/cal-luts`.
+
+## Calibrating spatial effects
+
+```bash
+python -m colorlab.spatial_calibration kit out/spatial-kit            # Lightroom: follow out/spatial-kit/README.txt
+python -m colorlab.spatial_calibration collect <exports> out/spatial-kit out/spatial-exports
+```
+
+A LUT can't hold effects that depend on a pixel's neighbourhood or position. Each image moves one
+spatial slider on one of three synthetic charts:
+- `scene`: flat patches, bar gratings, a ramp and colors.
+- `levels`: flat bands and noise patches.
+- `checker`: a fine four-gray checker.
+
+The export is then compared with the same chart's `Spatial Identity` export. `manifest.json`
+records where each chart's regions are.
 
 ## Quick look
 

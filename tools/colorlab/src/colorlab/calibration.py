@@ -129,8 +129,8 @@ _BASE_ATTRS = {
 }
 
 
-def variant_xmp(v: Variant) -> str:
-    """A complete Lightroom preset (.xmp) for one calibration variant."""
+def variant_xmp(v: Variant, group: str = CAL_GROUP) -> str:
+    """A complete Lightroom preset (.xmp) for one calibration variant, in preset group ``group``."""
     uid = uuid.uuid5(uuid.NAMESPACE_URL, f"filmsim-calibration:{v.name}").hex.upper()
     attrs = {**_BASE_ATTRS, "UUID": uid, **v.settings}
     attr_xml = "\n".join(f'    crs:{k}="{escape(str(val))}"' for k, val in attrs.items())
@@ -146,7 +146,7 @@ def variant_xmp(v: Variant) -> str:
     xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
 {attr_xml}>
    <crs:Name><rdf:Alt><rdf:li xml:lang="x-default">{escape(v.name, quote=False)}</rdf:li></rdf:Alt></crs:Name>
-   <crs:Group><rdf:Alt><rdf:li xml:lang="x-default">{CAL_GROUP}</rdf:li></rdf:Alt></crs:Group>
+   <crs:Group><rdf:Alt><rdf:li xml:lang="x-default">{escape(group, quote=False)}</rdf:li></rdf:Alt></crs:Group>
 {curves}  </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
