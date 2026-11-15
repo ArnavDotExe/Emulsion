@@ -86,3 +86,20 @@ relying on embedded settings.
   DNG SDK ordering and haven't been checked against a real sample yet.
 - Lightroom's exact amount and gamut-extend behaviour isn't public. The implemented behaviour
   (blend in encoded space, carry the out-of-gamut residual) still needs checking against Lightroom renders.
+
+### Cross-check against Lightroom bakes (local, private corpus)
+
+After the re-export, `collect` gave `collected 44, missing 0, unchanged 0`. Six table-based profile
+looks were compared on a 33³ grid: `apply_rgb_table` on our decoded table vs. Lightroom's baked LUT.
+
+| Profile kind | Mean ΔE2000 | Notes |
+|---|---|---|
+| sRGB/sRGB/clip table, no other sliders (2 looks) | **0.00** (p95 0.01) | Decoder and lookup match Lightroom exactly |
+| Same, plus profile Highlights −30 | 0.64 | Remainder is the profile's own Highlights slider |
+| Adobe RGB/γ2.2/extend tables with curve, Highlights/Shadows, Vibrance/Saturation (2 looks) | 1.8–5.0 | Remainder is the profile's own sliders, which come in task 6 |
+| Monochrome (Saturation −100, parametric curve, Contrast) | 4.9 | Same |
+
+Plain and "grainy" variants bake to identical LUTs (max diff 0), which confirms grain was zeroed.
+The table path is proven only for sRGB/clip at amount 1.0. Adobe RGB/extend gets isolated once task 6
+can apply the profiles' own sliders. Profile-level Highlights/Shadows can't be zeroed by the bake
+(they live inside the look), so those bakes may carry a little of Lightroom's local tone mapping.
