@@ -152,10 +152,15 @@ class KitEntry:
     source: str  # path relative to the preset folder (posix)
 
 
+#: an export whose mean deviation from the identity Hald is below this had no preset applied
+UNCHANGED_TOLERANCE = 1e-3
+
+
 @dataclass
 class CollectReport:
     collected: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
 
 
 README = """FilmSim bake kit
@@ -173,10 +178,11 @@ Lightroom Classic
    They appear in the preset group "FilmSim Bake". Any profiles your presets depend on
    (for example profile/look .xmp files) must be installed too.
 2. Import the hald/ folder (Add, don't move or copy).
-3. Open one image in Develop. If its settings already match its name (they're embedded
-   in the file), skip to step 5.
-4. Otherwise, apply to each image the "FilmSim Bake" preset with the same name.
-   Don't crop, rotate, resize or otherwise edit the images.
+3. Lightroom reads the embedded settings for some images and not others, so don't
+   rely on it. Apply to each image the "FilmSim Bake" preset with the same name.
+   Tip: in Develop, select an image and click its preset; filmstrip thumbnails that
+   still look like a plain, unedited color grid haven't been done yet.
+4. Don't crop, rotate, resize or otherwise edit the images.
 5. Select all of them and choose File > Export:
      File Naming:    Filename (keep the original names)
      File Settings:  TIFF, Compression None, Color Space sRGB, Bit Depth 16 bits/component
@@ -233,6 +239,9 @@ def collect_bakes(export_dir: str | Path, kit_dir: str | Path, out_dir: str | Pa
         lut = read_hald_tiff(path)
         if lut.size != level * level:
             raise LutFormatError(f"{path}: Hald level {round(lut.size ** 0.5)} does not match kit level {level}")
+        if np.abs(lut.table - Lut3D.identity(lut.size).table).mean() < UNCHANGED_TOLERANCE:
+            report.unchanged.append(name)  # Lightroom exported it without applying the preset
+            continue
         cube_name = name[len(BAKE_PREFIX) :] if name.startswith(BAKE_PREFIX) else name
         write_cube(Lut3D(lut.table, title=entry["preset_name"]), out / f"{cube_name}.cube")
         report.collected.append(name)
@@ -259,9 +268,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"wrote {len(entries)} bake preset(s) to {args.out_dir}; see README.txt there")
         else:
             report = collect_bakes(args.export_dir, args.kit_dir, args.out_dir)
-            print(f"collected {len(report.collected)}, missing {len(report.missing)} -> {args.out_dir}")
+            print(
+                f"collected {len(report.collected)}, missing {len(report.missing)}, "
+                f"unchanged {len(report.unchanged)} -> {args.out_dir}"
+            )
             for name in report.missing:
                 print(f"  missing: {name}")
+            for name in report.unchanged:
+                print(f"  unchanged (preset not applied): {name}")
     except (ColorlabError, FileExistsError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

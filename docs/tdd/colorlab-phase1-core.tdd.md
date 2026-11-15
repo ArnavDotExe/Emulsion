@@ -62,6 +62,22 @@ Guarantees (`tests/test_bake.py`):
 - The kit refuses a non-empty output folder and de-duplicates names.
 - `collect` converts matching exports, reports missing ones, and rejects a level mismatch. The command-line tool returns 0 and prints a summary.
 
+### Regression: untouched exports
+
+The first real Lightroom run baked 15 of 44 presets. The other 29 came back as identity images
+(mean deviation 0.0001), because Lightroom picked up the embedded settings for only some of the TIFFs.
+`collect` would have quietly written 29 do-nothing LUTs.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_bake.py` | 3 failed: `AttributeError: 'CollectReport' object has no attribute 'unchanged'`, plus 2 CLI output assertions |
+| GREEN | `pytest --cov` | **168 passed, 97.07% coverage** |
+| Real run | `python -m colorlab.bake collect out/bake-exports out/bake-kit looks/private/lightroom` | `collected 15, missing 0, unchanged 29`; no identity LUTs written |
+
+Guarantee: exports within 1e-3 mean deviation of the identity Hald are reported as
+"unchanged (preset not applied)" and never converted. The kit README no longer suggests
+relying on embedded settings.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
