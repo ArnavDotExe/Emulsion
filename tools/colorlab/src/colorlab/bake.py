@@ -33,6 +33,7 @@ from .preset import load_preset_dir
 
 BAKE_PREFIX = "Emulsion Bake - "
 BAKE_GROUP = "Emulsion Bake"
+LEGACY_BAKE_PREFIXES = ("FilmSim Bake - ",)  # kits made before the app was renamed
 DEFAULT_LEVEL = 8  # 64^3 cube, 512 x 512 image
 
 #: setting -> neutral value written into bake copies (only replaced when present)
@@ -282,7 +283,8 @@ def collect_bakes(export_dir: str | Path, kit_dir: str | Path, out_dir: str | Pa
         if np.abs(lut.table - Lut3D.identity(lut.size).table).mean() < UNCHANGED_TOLERANCE:
             report.unchanged.append(name)  # Lightroom exported it without applying the preset
             continue
-        cube_name = name[len(BAKE_PREFIX) :] if name.startswith(BAKE_PREFIX) else name
+        prefix = next((p for p in (BAKE_PREFIX, *LEGACY_BAKE_PREFIXES) if name.startswith(p)), "")
+        cube_name = name[len(prefix) :]
         write_cube(Lut3D(lut.table, title=entry["preset_name"]), out / f"{cube_name}.cube")
         report.collected.append(name)
     return report
