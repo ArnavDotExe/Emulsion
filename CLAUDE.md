@@ -107,7 +107,9 @@ Lightroom quirks:
 
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
-- Accuracy against the user's 44 private presets: median ΔE2000 3.18, mean 4.39.
+- Accuracy against the user's 44 private presets: median ΔE2000 2.92, mean 4.13. Tone curves
+  (exposure, contrast, whites/blacks, parametric, master curve) are applied hue-preservingly
+  (`pipeline.rgb_tone`); white balance and per-channel curves stay per channel.
 - All 147 calibration bakes are collected (mean 2.22 ΔE); no re-bake is pending.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is

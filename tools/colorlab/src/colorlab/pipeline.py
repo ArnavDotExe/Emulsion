@@ -135,12 +135,28 @@ def _is_identity(curve: Curve) -> bool:
     return tuple(map(tuple, curve)) == IDENTITY_CURVE
 
 
+def rgb_tone(rgb: np.ndarray, curve: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
+    """Apply a monotonic tone ``curve`` to colors without shifting their hue.
+
+    The curve maps each pixel's largest and smallest channel; the middle channel keeps its
+    relative place between them (the "RGB tone" method of Adobe's public DNG SDK). Neutrals
+    get exactly ``curve``. Per-channel curves would instead push bright saturated colors
+    toward the primaries and secondaries (red toward orange, blue toward cyan).
+    """
+    rgb = _as_rgb(rgb)
+    hi, lo = rgb.max(axis=-1), rgb.min(axis=-1)
+    f_hi, f_lo = curve(hi), curve(lo)
+    span = hi - lo
+    place = (rgb - lo[..., None]) / np.where(span > 0, span, 1.0)[..., None]
+    return f_lo[..., None] + place * (f_hi - f_lo)[..., None]
+
+
 def apply_curves(rgb: np.ndarray, master: Curve = IDENTITY_CURVE, red: Curve = IDENTITY_CURVE,
                  green: Curve = IDENTITY_CURVE, blue: Curve = IDENTITY_CURVE) -> np.ndarray:
-    """Master curve on every channel, then each channel's own curve (encoded values)."""
+    """Master curve (hue-preserving, see ``rgb_tone``), then each channel's own curve (encoded values)."""
     out = _as_rgb(rgb).copy()
     if not _is_identity(master):
-        out = spline(master)(out)
+        out = rgb_tone(out, spline(master))
     for i, curve in enumerate((red, green, blue)):
         if not _is_identity(curve):
             out[..., i] = spline(curve)(out[..., i])
@@ -162,24 +178,33 @@ def white_balance(enc: np.ndarray, temperature: float = 0.0, tint: float = 0.0) 
 
 
 def exposure(enc: np.ndarray, ev: float) -> np.ndarray:
-    """Exposure in stops (-5..5): Lightroom's shoulder, which keeps white and never clips."""
+    """Exposure in stops (-5..5): Lightroom's shoulder, which keeps white and never clips,
+    applied hue-preservingly (``rgb_tone``)."""
     _check("exposure", ev, -5, 5)
     enc = _as_rgb(enc)
-    return enc if ev == 0 else _response().exposure.apply(enc, ev)
+    if ev == 0:
+        return enc
+    shoulder = _response().exposure
+    return rgb_tone(enc, lambda v: shoulder.apply(v, ev))
 
 
 def tone(enc: np.ndarray, contrast: float = 0.0, whites: float = 0.0, blacks: float = 0.0) -> np.ndarray:
-    """Contrast, Whites and Blacks (-100..100): Lightroom's measured per-channel curves, in that order."""
+    """Contrast, Whites and Blacks (-100..100): Lightroom's measured curves, in that order, applied
+    hue-preservingly (``rgb_tone``)."""
     for name, v in (("contrast", contrast), ("whites", whites), ("blacks", blacks)):
         _check(name, v, -100, 100)
     enc = _as_rgb(enc)
     if contrast == 0 and whites == 0 and blacks == 0:
         return enc
-    e = np.clip(enc, 0.0, 1.0)
     tones = _response().tone
-    for key, v in (("Contrast2012", contrast), ("Whites2012", whites), ("Blacks2012", blacks)):
-        e = tones[key].apply(e, v)
-    return e
+
+    def curve(v: np.ndarray) -> np.ndarray:
+        v = np.clip(v, 0.0, 1.0)
+        for key, amount in (("Contrast2012", contrast), ("Whites2012", whites), ("Blacks2012", blacks)):
+            v = tones[key].apply(v, amount)
+        return v
+
+    return rgb_tone(enc, curve)
 
 
 def parametric_curve(enc: np.ndarray, shadows: float = 0.0, darks: float = 0.0, lights: float = 0.0,
@@ -197,12 +222,16 @@ def parametric_curve(enc: np.ndarray, shadows: float = 0.0, darks: float = 0.0, 
     # Lightroom's measured region curves are for the default splits; other splits stretch the
     # tonal axis so each region keeps its place, and the regions apply one after another.
     custom, default = (0.0, s1, s2, s3, 1.0), (0.0, 0.25, 0.5, 0.75, 1.0)
-    e = np.interp(np.clip(enc, 0.0, 1.0), custom, default)
     tones = _response().tone
-    for key, amount in zip(("ParametricShadows", "ParametricDarks", "ParametricLights", "ParametricHighlights"),
-                           amounts):
-        e = tones[key].apply(e, amount)
-    return np.interp(e, default, custom)
+
+    def curve(v: np.ndarray) -> np.ndarray:
+        v = np.interp(np.clip(v, 0.0, 1.0), custom, default)
+        for key, amount in zip(("ParametricShadows", "ParametricDarks", "ParametricLights", "ParametricHighlights"),
+                               amounts):
+            v = tones[key].apply(v, amount)
+        return np.interp(v, default, custom)
+
+    return rgb_tone(enc, curve)
 
 
 # --- hue/chroma decomposition ---------------------------------------------------------------------

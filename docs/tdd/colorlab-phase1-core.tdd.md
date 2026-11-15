@@ -244,6 +244,28 @@ can't measure a white-balance channel never silently ships "0 stops".
   `measure_response` replaces them with the base and records a warning.
 - Results: the public suite passes at 97.49% coverage; the private accuracy suite passes unchanged.
 
+### Hue-preserving tone curves (`pipeline.rgb_tone`)
+
+Journey: as a photographer, bright saturated colors keep their hue under exposure, contrast,
+whites/blacks, the parametric curve and the master point curve. Pushed red stays red; it
+doesn't turn orange.
+
+The method is the "RGB tone" approach from Adobe's public DNG SDK: the curve maps each pixel's
+largest and smallest channel, and the middle channel keeps its relative place between them.
+White balance and per-channel point curves stay per channel.
+
+| # | What is guaranteed | Test (`tests/test_pipeline.py`) | Result |
+|---|---|---|---|
+| 1 | Exposure ±1, Contrast, Whites/Blacks, the parametric curve and the master curve keep each color's hue and channel order | `test_tone_stages_keep_each_colors_hue` (6 cases) | PASS |
+| 2 | Neutrals still map exactly through the curve | `test_hue_preserving_tone_still_maps_neutrals_through_the_curve` | PASS |
+| 3 | Per-channel point curves stay per channel | `test_per_channel_curves_still_act_per_channel` | PASS |
+
+- RED `141213d`: all 6 hue cases failed with per-channel curves.
+- GREEN: full suite (public and private) 363 passed, 98% coverage.
+- Single-slider bakes (44 tone variants): mean ΔE 1.44 → 0.67. Exposure +2 4.86 → 1.76;
+  Whites +100 4.19 → 0.57; Parametric Lights +100 3.51 → 0.50.
+- Private presets: median 3.18 → 2.92, mean 4.39 → 4.13. The private regression bound is now ≤ 2.98 / ≤ 4.20.
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one
