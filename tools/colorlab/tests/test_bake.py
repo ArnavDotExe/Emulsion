@@ -1,6 +1,7 @@
 import json
 import re
 
+import defusedxml.ElementTree as ET
 import numpy as np
 import pytest
 import tifffile
@@ -11,6 +12,7 @@ from colorlab.bake import (
     collect_bakes,
     main,
     make_bake_xmp,
+    make_sidecar_xmp,
     read_hald_tiff,
     write_bake_kit,
     write_hald_tiff,
@@ -92,6 +94,46 @@ def test_bake_copy_requires_a_description_and_a_name():
     no_name = make_xmp().replace("<crs:Name>", "<crs:Nope>").replace("</crs:Name>", "</crs:Nope>")
     with pytest.raises(PresetFormatError, match="Name"):
         make_bake_xmp(no_name, "n")
+
+
+# --- embedded sidecar XMP (so Lightroom applies the settings on import) ------------------------
+
+def test_sidecar_xmp_looks_like_a_lightroom_sidecar():
+    out = make_sidecar_xmp(make_bake_xmp(make_xmp({"Exposure2012": "+0.50"}), "FilmSim Bake - X"))
+    ET.fromstring(out)  # well formed, no duplicate attributes
+    for attr in ('crs:AlreadyApplied="False"', "xmp:MetadataDate=", "xmp:ModifyDate=", "xmp:CreatorTool=",
+                 "xmpMM:DocumentID=", "xmpMM:InstanceID=", "xmpMM:OriginalDocumentID=",
+                 'xmlns:xmp="http://ns.adobe.com/xap/1.0/"', 'xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"'):
+        assert attr in out, attr
+    doc = re.search(r'xmpMM:DocumentID="([^"]+)"', out).group(1)
+    assert doc.startswith("xmp.did:") and f'xmpMM:OriginalDocumentID="{doc}"' in out
+    assert re.search(r'xmp:MetadataDate="\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"', out)
+    assert parse_preset(out).number("Exposure2012") == 0.5
+
+
+def test_sidecar_xmp_replaces_existing_values_and_keeps_process_version():
+    src = make_xmp({"AlreadyApplied": "True", "ProcessVersion": "15.4"})
+    out = make_sidecar_xmp(src)
+    ET.fromstring(out)
+    assert out.count("crs:AlreadyApplied=") == 1 and 'crs:AlreadyApplied="False"' in out
+    assert 'crs:ProcessVersion="15.4"' in out
+
+
+def test_sidecar_xmp_adds_a_process_version_when_missing():
+    assert 'crs:ProcessVersion="11.0"' in make_sidecar_xmp(make_xmp())
+
+
+def test_bake_kit_tiffs_embed_sidecars_with_distinct_ids(tmp_path):
+    presets = make_preset_dir(tmp_path / "presets")
+    (presets / "pack" / "Second.xmp").write_text(make_xmp().replace("Test Preset", "Second"), encoding="utf-8")
+    kit = tmp_path / "kit"
+    write_bake_kit(presets, kit, level=2)
+    ids = set()
+    for tif in (kit / "hald").glob("*.tif"):
+        xmp = read_dng_xmp(tif)
+        assert 'crs:AlreadyApplied="False"' in xmp
+        ids.add(re.search(r'xmpMM:DocumentID="([^"]+)"', xmp).group(1))
+    assert len(ids) == 2
 
 
 # --- Hald TIFFs ----------------------------------------------------------------------------
