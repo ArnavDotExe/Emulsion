@@ -12,8 +12,8 @@ reference the Android GPU engine has to match.
 | `adobe_table` | Decode and encode Lightroom `crs:Table_*` RGBTables (base-85, zlib, identity deltas); apply one with amount and gamut handling |
 | `preset` | Parse `.xmp` and mobile `.dng` presets into a typed `Preset` (settings, point curves, looks); resolve stubbed looks to their profile presets |
 | `pipeline` | Reference model of a preset's global color sliders in Lightroom order: white balance, exposure, contrast/whites/blacks, parametric and point curves, HSL, color grading, look table, saturation/vibrance, B&W mixer. `render()` an image or `render_lut()` a LUT |
-| `calibration` | 143 single-slider Lightroom presets for baking; measures slider shapes from their bakes and fits each remaining `pipeline` strength |
-| `response` | Lightroom's measured slider responses (exposure shoulder, tone and parametric curves per amount, vibrance gains), shipped in `data/lightroom_response.json` |
+| `calibration` | 147 single-slider Lightroom presets for baking; measures slider shapes from their bakes and fits each remaining `pipeline` strength |
+| `response` | Lightroom's measured slider responses (exposure shoulder, white-balance stops per channel, tone and parametric curves per amount, vibrance gains), shipped in `data/lightroom_response.json` |
 | `metrics` | CIE Lab (D65) from sRGB and CIEDE2000 color difference |
 | `bake` | Turn presets into exact LUTs through Lightroom: a kit of bake presets (spatial and geometry settings zeroed) plus same-named 16-bit Hald TIFFs, then `.cube` LUTs from the exports |
 | `errors` | `ColorlabError` and its subclasses; every message names the file or setting |

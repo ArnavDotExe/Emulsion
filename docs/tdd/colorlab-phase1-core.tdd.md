@@ -99,6 +99,7 @@ Guarantees (`tests/test_pipeline.py`):
 - Tone, parametric and point curves keep 0 and 1 fixed. Tone and parametric stay monotonic even at ±100.
 - Contrast pivots around middle gray; Blacks work low and Whites high; each parametric region moves its own tones.
 - White balance keeps working-space luminance; +temperature warms; +tint adds magenta.
+  (Superseded: white balance is now measured per-channel stops; see "White balance" below.)
 - HSL, saturation/vibrance and the B&W mixer leave neutrals neutral. Saturation −100 gives gray.
   Vibrance favors muted colors. Each HSL band moves only its own hues.
 - Color grading tints the right zones, and Balance moves the split.
@@ -183,6 +184,39 @@ Re-bake with the 30 missing variants (`out/cal-redo3-kit`, all 143 bakes now pre
 
 Known gaps: the remaining tone error (Whites +100 4.2, Parametric Lights +100 3.5) is Lightroom not
 acting purely per channel at the extremes. Exposure +2 is still 4.9.
+
+### White balance (`WhiteBalanceResponse`)
+
+Journey: *As a maintainer, I want temperature and tint to match Lightroom on rendered images, because
+the luminance-keeping gain model was 12–26 ΔE off at ±50/±100 even with fitted strengths.*
+
+What the bakes showed (neutral ramp, per channel, inverted through the exposure shoulder):
+- Each channel gets a constant number of stops from shadows to highlights. It's a per-channel
+  exposure on the same shoulder, so white stays white.
+- The weakest channel barely moves: blue for warm, green for magenta.
+- The stops grow non-linearly. Temperature +50 is R 1.01 / G 0.84 / B 0.02, while −100 is
+  R 1.44 / G 0.96 / B 3.71.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest --continue-on-collection-errors` | `test_response.py` cannot import `WhiteBalanceResponse`. 10 runtime failures: white doesn't stay white, the Lightroom gray targets are missed, `K_TEMPERATURE`/`K_TINT` still exist, and there are no ±25 variants (commit 0a6e29a) |
+| GREEN | `pytest --cov` | One failure: a channel with 0 stops wasn't bit-identical after the curve round trip, so it now passes through. Then everything passes, **98% coverage** (commit fa9d9a8) |
+| Real run | `calibration response out/cal-luts` | Temperature and tint stops measured at ±50/±100 |
+| Real run | `calibration fit out/cal-luts` | Mean over 143 bakes 2.67 → **2.25**. Temperature −100 25.8 → 13.4, +100 18.6 → 6.3, Tint −100 13.1 → 4.9, the ±50 bakes 1.7–4.4 (were 3.5–12.0) |
+| Real run | 44 private presets | median **3.18**, mean **4.39** (threshold 3.25 / 4.45) |
+
+Guarantees:
+- White balance keeps black and white, and every channel stays monotonic.
+- +temperature warms while keeping blue, and +tint adds magenta while keeping green.
+- Four Lightroom gray targets match within 0.03.
+- Stops are 0 at 0, exact at baked amounts, linear in between, clamped outside, and temperature and
+  tint add.
+- The shoulder takes one EV per channel, and a channel with 0 stops passes through exactly.
+- `measure_response` recovers known per-channel stops from synthetic working-space bakes.
+
+Known gaps: Temperature/Tint ±25 are in the kit but not baked yet (`out/cal-redo4-kit`, 4 presets).
+Temperature −100 (13.4) and ±100 still miss on saturated colors. Lightroom's white balance isn't
+purely per-channel there, and the sRGB output clips.
 
 ## Coverage and known gaps
 

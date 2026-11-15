@@ -72,14 +72,15 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `adobe_table` | Lightroom `crs:Table_*` RGBTable decode/encode/apply |
 | `preset` | `.xmp` / mobile `.dng` presets → typed `Preset`, look resolution |
 | `pipeline` | Reference model of a preset's global color in Lightroom order; `render()`, `render_lut()` |
-| `response` | Lightroom's **measured** slider shapes (exposure shoulder, tone and parametric curves per amount, vibrance gains), stored in `data/lightroom_response.json` |
-| `calibration` | 143 single-slider calibration presets; `response` measures shapes from bakes, `fit` fits the remaining `K_*` strengths |
+| `response` | Lightroom's **measured** slider shapes (exposure shoulder, white-balance stops per channel, tone and parametric curves per amount, vibrance gains), stored in `data/lightroom_response.json` |
+| `calibration` | 147 single-slider calibration presets; `response` measures shapes from bakes, `fit` fits the remaining `K_*` strengths |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 
-The pipeline works in ProPhoto primaries. White balance runs in linear light. Every later stage runs
-per channel on sRGB-curve encoded values. Neutral grays pass through unchanged between sRGB and the
-working space, so a bake's neutral ramp *is* Lightroom's tone curve.
+The pipeline works in ProPhoto primaries, and every stage runs on sRGB-curve encoded values. White
+balance and exposure are stops on one shared highlight shoulder: per channel for white balance, so
+white stays white. Neutral grays pass through unchanged between sRGB and the working space, so a
+bake's neutral ramp *is* Lightroom's tone curve.
 
 ### Calibration loop (needs Lightroom; all output under `out/`)
 
@@ -99,9 +100,12 @@ Lightroom quirks:
 
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
-- Accuracy against the user's 44 private presets: median ΔE2000 3.39, mean 4.51.
-- **Next shape to fix:** white balance. Temperature/tint are 12–26 ΔE at ±50/±100, so the model is
-  wrong, not just its strength. Saturation −50 is still 3.0.
+- Accuracy against the user's 44 private presets: median ΔE2000 3.18, mean 4.39.
+- `out/cal-redo4-kit` (Temperature/Tint ±25) is waiting on a Lightroom bake.
+- Biggest single-slider gaps:
+  - Temperature −100 13.4, Temperature +100 6.3. Lightroom isn't purely per-channel on saturated colors.
+  - Exposure +2 4.9, Whites +100 4.2.
+  - Saturation −50 3.0. Saturation is still a formula and could be measured the same way.
 - Then:
   - 6b: spatial effects (grain, vignette, highlights/shadows, clarity). The worst presets are dominated by these.
   - 7: check against the Fuji DNG presets' embedded Lightroom previews.
