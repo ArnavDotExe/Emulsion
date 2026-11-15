@@ -11,6 +11,7 @@ reference the Android GPU engine has to match.
 | `lut` | `Lut3D` (indexed `[r, g, b]`), tetrahedral and trilinear lookup, `.cube` read/write, Hald CLUT images |
 | `adobe_table` | Decode and encode Lightroom `crs:Table_*` RGBTables (base-85, zlib, identity deltas); apply one with amount and gamut handling |
 | `preset` | Parse `.xmp` and mobile `.dng` presets into a typed `Preset` (settings, point curves, looks); resolve stubbed looks to their profile presets |
+| `pipeline` | Reference model of a preset's global color sliders in Lightroom order: white balance, exposure, contrast/whites/blacks, parametric and point curves, HSL, color grading, look table, saturation/vibrance, B&W mixer. `render()` an image or `render_lut()` a LUT |
 | `bake` | Turn presets into exact LUTs through Lightroom: a kit of bake presets (spatial and geometry settings zeroed) plus same-named 16-bit Hald TIFFs, then `.cube` LUTs from the exports |
 | `errors` | `ColorlabError` and its subclasses; every message names the file or setting |
 

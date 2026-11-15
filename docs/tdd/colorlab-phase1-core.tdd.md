@@ -1,8 +1,8 @@
 # TDD evidence: colorlab Phase 1 core
 
 **Source plan:** the Phase 1 "Python color lab" plan agreed in the planning session.
-This report covers tasks 1–5: repo setup, color spaces, LUTs, the RGBTable decoder and
-the preset reader. Still open: the reference pipeline (task 6), checks against Lightroom renders (7),
+This report covers tasks 1–5 (repo setup, color spaces, LUTs, the RGBTable decoder and
+the preset reader) and task 6a (global color pipeline). Still open: spatial effects (6b), checks against Lightroom renders (7),
 `.fsim` (8) and the command-line tool (9).
 
 ## User journeys
@@ -78,10 +78,47 @@ Guarantee: exports within 1e-3 mean deviation of the identity Hald are reported 
 "unchanged (preset not applied)" and never converted. The kit README no longer suggests
 relying on embedded settings.
 
+## Task 6a: reference pipeline, global color (`colorlab.pipeline`)
+
+Journey: *As a photographer, I want a preset's color sliders reproduced by FilmSim's own
+engine, so that I can edit looks in-app and not only replay fixed LUTs.*
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_pipeline.py` | `ModuleNotFoundError: No module named 'colorlab.pipeline'` (commit 695c2be) |
+| GREEN | `pytest tests/test_pipeline.py`, then `pytest --cov` | First run: 5 failed. One was a real bug: neutral detection used the new chroma, so Saturation −100 did nothing. One spline case wasn't actually collinear. The parametric bumps were too steep near 0 and 1. After fixes: all pass; full suite **241 passed, 97.80%**; CI view **236 passed, 97.50%** |
+
+Before GREEN, two fixtures were changed to match the spec, not the code: white-balance luminance is
+now checked in the working space (it was Rec.709 luma after a D50→D65 conversion), and the "pure red"
+sample sits on the red band's center.
+
+Guarantees (`tests/test_pipeline.py`):
+- Every stage is exactly identity at its defaults, and out-of-range sliders raise `ParameterError`.
+- Point curves pass through their control points and are straight for collinear points. They hold
+  their end values outside the points, stay smooth, and reject bad points.
+- Tone, parametric and point curves keep 0 and 1 fixed. Tone and parametric stay monotonic even at ±100.
+- Contrast pivots around middle gray; Blacks work low and Whites high; each parametric region moves its own tones.
+- White balance keeps working-space luminance; +temperature warms; +tint adds magenta.
+- HSL, saturation/vibrance and the B&W mixer leave neutrals neutral. Saturation −100 gives gray.
+  Vibrance favors muted colors. Each HSL band moves only its own hues.
+- Color grading tints the right zones, and Balance moves the split.
+- `render` is identity for an empty preset and keeps the image shape. Exposure +1 doubles linear light.
+  Curves apply in the encoded domain. Look tables apply at their amount, and the look profile's own
+  settings are applied.
+
+Accuracy against Lightroom (private test `tests/private/test_pipeline_vs_lightroom.py`, 44 baked presets,
+17³ grid, ΔE2000): **median 4.25, mean 5.28** with first-guess strengths. Table-only looks stay at 0.00.
+Fitting the strengths to the composite presets only reached a mean of 4.30. It also picked an
+implausible stage order and a Blacks strength that would break monotonicity, so it was **not adopted**.
+Stages can't be told apart from composite presets. Calibration needs single-slider bakes (next step).
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
   (truncated-TIFF `struct.error`, non-UTF-8 XMP packets, empty-sample curves).
+- Pipeline: stage strengths (`K_*`) are first guesses until single-slider calibration. Not yet modelled:
+  Highlights/Shadows, Clarity, Texture, Dehaze (local, task 6b), camera calibration sliders (3 presets use them),
+  raw-only Kelvin white balance, and Adobe built-in looks (1 preset).
 - RGBTable primaries/gamma enum values 2–4 (ProPhoto, P3, Rec.2020, gamma 1.8) follow the
   DNG SDK ordering and haven't been checked against a real sample yet.
 - Lightroom's exact amount and gamut-extend behaviour isn't public. The implemented behaviour
