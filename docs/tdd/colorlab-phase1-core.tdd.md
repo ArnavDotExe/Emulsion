@@ -112,6 +112,32 @@ Fitting the strengths to the composite presets only reached a mean of 4.30. It a
 implausible stage order and a Blacks strength that would break monotonicity, so it was **not adopted**.
 Stages can't be told apart from composite presets. Calibration needs single-slider bakes (next step).
 
+## Calibration kit (`colorlab.calibration`, `colorlab.metrics`, sidecar bakes)
+
+Journey: *As a maintainer, I want each pipeline strength fitted to Lightroom from bakes that
+move only that slider, so that calibration isn't fooled by presets that move many sliders at once.*
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_metrics.py tests/test_calibration.py tests/test_bake.py` | 3 collection errors: `No module named 'colorlab.metrics'`, `No module named 'colorlab.calibration'`, `cannot import name 'make_sidecar_xmp'` (commit 60fdc4b) |
+| GREEN | `pytest --cov` | One failure: Lab differed from colour-science by up to 0.02. colour-science uses the IEC 61966-2-1 rounded matrix and ours uses the exact primaries, so the tolerance became 0.05. Then **267 passed, 97.75%**; CI view **262 passed, 97.50%** (commit 7ded2be) |
+| Real run | `calibration presets out/cal-presets` then `bake kit out/cal-presets out/cal-kit` | 123 presets, 123 Hald TIFFs (186 MB); embedded XMP parses and carries the slider |
+
+Guarantees:
+- `metrics`: Lab matches colour-science. CIEDE2000 matches the Sharma reference pairs within 1e-4
+  and colour-science within 1e-6, is symmetric, and is zero for equal colors.
+- `calibration`: variant names are unique and file-safe. Every `K_*` strength has search bounds
+  (tone-curve bounds keep curves monotonic) and at least one variant. Every slider family and HSL band
+  is covered. B&W variants set the whole mixer, so Lightroom's auto-mix can't leak in. Variant XMPs are
+  complete presets that feed `bake kit` directly.
+- The fitter recovers known strengths from synthetic bakes within 2%, restores the pipeline's
+  strengths afterwards, reports missing bakes, and still scores variants that inform no strength.
+  The command-line tool writes presets, prints fitted constants and JSON, and fails cleanly with no bakes.
+- `bake`: kit TIFFs embed a Lightroom-sidecar-style XMP (`crs:AlreadyApplied="False"`, metadata dates,
+  a distinct document ID each). Existing values are replaced, not duplicated. A missing process version
+  becomes 11.0. That Lightroom then auto-applies the settings is a **hypothesis** and still has to be
+  confirmed in Lightroom.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
