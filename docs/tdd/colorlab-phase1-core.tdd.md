@@ -8,7 +8,7 @@ the preset reader) and task 6a (global color pipeline). Still open: spatial effe
 ## User journeys
 
 - As a photographer, I want my Lightroom presets (`.xmp` and mobile `.dng`) read accurately,
-  so that FilmSim can reproduce their looks.
+  so that Emulsion can reproduce their looks.
 - As a photographer, I want presets that embed a color table (profile/look presets) carried over
   exactly, so that table-based looks match Lightroom pixel for pixel in color.
 - As a contributor, I want standard `.cube` and Hald LUT exchange, so that looks can be
@@ -46,7 +46,7 @@ the preset reader) and task 6a (global color pipeline). Still open: spatial effe
 ## Addendum: Lightroom bake kit (`colorlab.bake`)
 
 Journey: *As a photographer with Lightroom, I want each preset's exact global color as
-a LUT, so that FilmSim matches Lightroom without reverse-engineering its math.*
+a LUT, so that Emulsion matches Lightroom without reverse-engineering its math.*
 
 | Step | Command | Result |
 |---|---|---|
@@ -80,7 +80,7 @@ relying on embedded settings.
 
 ## Task 6a: reference pipeline, global color (`colorlab.pipeline`)
 
-Journey: *As a photographer, I want a preset's color sliders reproduced by FilmSim's own
+Journey: *As a photographer, I want a preset's color sliders reproduced by Emulsion's own
 engine, so that I can edit looks in-app and not only replay fixed LUTs.*
 
 | Step | Command | Result |

@@ -1,7 +1,7 @@
-# FilmSim
+# Emulsion
 
 An open-source film-emulation camera for Android, in the spirit of apps like
-Dazz Cam and Leica LUX, which don't exist on Android. FilmSim aims to give
+Dazz Cam and Leica LUX, which don't exist on Android. Emulsion aims to give
 Android photographers analog-style looks, film simulations and filters,
 with a color pipeline that is open, measurable and hackable.
 
@@ -30,7 +30,7 @@ with a color pipeline that is open, measurable and hackable.
 
 ## Bring your own presets
 
-FilmSim ships **no third-party presets or LUTs**. If you own Lightroom presets,
+Emulsion ships **no third-party presets or LUTs**. If you own Lightroom presets,
 put them in `presets/private/`. That folder, `looks/private/` and `samples/`
 are gitignored, so personal or commercial files are never committed.
 
@@ -50,5 +50,5 @@ Python 3.11 or newer. Coverage must stay at or above 80%.
 
 [GPL-3.0-or-later](LICENSE). Fork it, improve it, and keep it open.
 
-FilmSim isn't affiliated with Dazz Cam, Leica, Fujifilm or Adobe. Their names
+Emulsion isn't affiliated with Dazz Cam, Leica, Fujifilm or Adobe. Their names
 are used only to describe what this project is inspired by or interoperates with.

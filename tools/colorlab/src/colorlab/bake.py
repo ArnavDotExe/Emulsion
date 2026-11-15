@@ -1,7 +1,7 @@
 """Bake Lightroom presets into exact 3D LUTs with a Hald round trip.
 
 1. ``kit``: for every user preset, write a *bake copy* (spatial and geometric
-   settings neutralized, renamed into the "FilmSim Bake" group) plus a 16-bit
+   settings neutralized, renamed into the "Emulsion Bake" group) plus a 16-bit
    identity Hald TIFF named after it, with the bake settings embedded as XMP.
 2. In Lightroom, apply each bake preset to its same-named Hald, then export
    16-bit sRGB TIFFs keeping the original file names.
@@ -10,7 +10,7 @@
 
 Spatial effects (grain, vignette, sharpening, noise reduction, local tone:
 highlights/shadows/clarity/texture/dehaze) are zeroed because they would mix
-neighbouring Hald cells. The FilmSim engine applies them on top of the LUT.
+neighbouring Hald cells. The Emulsion engine applies them on top of the LUT.
 """
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ from .errors import ColorlabError, LutFormatError, PresetFormatError
 from .lut import Lut3D, hald_identity, lut_from_hald, write_cube
 from .preset import load_preset_dir
 
-BAKE_PREFIX = "FilmSim Bake - "
-BAKE_GROUP = "FilmSim Bake"
+BAKE_PREFIX = "Emulsion Bake - "
+BAKE_GROUP = "Emulsion Bake"
 DEFAULT_LEVEL = 8  # 64^3 cube, 512 x 512 image
 
 #: setting -> neutral value written into bake copies (only replaced when present)
@@ -141,7 +141,7 @@ def make_sidecar_xmp(xmp_text: str) -> str:
     doc = str(uuid.uuid4())
     for qname, value in (
         ("dc:format", "image/tiff"),
-        ("xmp:CreatorTool", "FilmSim colorlab"),
+        ("xmp:CreatorTool", "Emulsion colorlab"),
         ("xmp:ModifyDate", now),
         ("xmp:MetadataDate", now),
         ("crs:HasSettings", "True"),
@@ -203,24 +203,24 @@ class CollectReport:
     unchanged: list[str] = field(default_factory=list)
 
 
-README = """FilmSim bake kit
+README = """Emulsion bake kit
 ================
 presets/        {n} bake presets: copies of your presets with spatial and geometry settings zeroed
 hald/           {n} identity images (16-bit TIFF, {w}x{w}), one per preset, named after it
 manifest.json   which bake belongs to which original preset
 
 Grain, vignette, sharpening, noise reduction, highlights/shadows, clarity, texture and
-dehaze are zeroed because they would smear the Hald image. FilmSim adds them back itself.
+dehaze are zeroed because they would smear the Hald image. Emulsion adds them back itself.
 
 Lightroom Classic
 -----------------
 1. File > Import Develop Profiles and Presets... and select every file in presets/.
-   They appear in the preset group "FilmSim Bake". Any profiles your presets depend on
+   They appear in the preset group "Emulsion Bake". Any profiles your presets depend on
    (for example profile/look .xmp files) must be installed too.
 2. Import the hald/ folder (Add, don't move or copy). Each image carries its bake
    settings as an embedded Lightroom sidecar, so Lightroom should apply them on import.
 3. Check the filmstrip: an image that still looks like a plain, unedited color grid
-   didn't pick its settings up. Apply to it the "FilmSim Bake" preset with the same
+   didn't pick its settings up. Apply to it the "Emulsion Bake" preset with the same
    name. (`collect` also lists any export that comes back unedited.)
 4. Don't crop, rotate, resize or otherwise edit the images.
 5. Select all of them and choose File > Export:
