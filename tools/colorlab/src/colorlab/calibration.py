@@ -255,6 +255,7 @@ class ResponseReport:
     response: response.Response
     measured: list[str] = field(default_factory=list)  # sliders measured from the bakes
     kept: list[str] = field(default_factory=list)  # sliders without bakes: taken from the base response
+    warnings: list[str] = field(default_factory=list)  # measurements that fell back to the base
 
 
 def _neutral(lut: Lut3D) -> np.ndarray:
@@ -311,12 +312,13 @@ def _vibrance_tables(knots: np.ndarray, c: np.ndarray, bw: np.ndarray, d: np.nda
 def _white_balance_stops(lut: Lut3D, shoulder: response.ExposureShoulder) -> np.ndarray:
     """Stops per channel (R, G, B) that take a neutral ramp to the bake, on the exposure shoulder.
 
-    Uses the median over ramp samples away from black, white and any clipped output.
+    Uses the median over ramp samples away from black, white and any clipped output; a channel
+    without any such sample is NaN (not measurable from this bake).
     """
     ramp = np.repeat(response.X[:, None], 3, axis=1)
     baked = apply_lut(lut, ramp).astype(np.float64)
     out = _to_working(baked)
-    stops = np.zeros(3)
+    stops = np.full(3, np.nan)
     for ch in range(3):
         ok = ((ramp[:, ch] > 0.02) & (ramp[:, ch] < 0.9) & (out[:, ch] > 0.005) & (out[:, ch] < 0.98)
               & np.all(baked < 1 - 1e-4, axis=1))
@@ -362,11 +364,20 @@ def _measure_vibrance(luts: Mapping[float, Lut3D], base: response.VibranceRespon
 
 def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS,
                      base: response.Response | None = None) -> ResponseReport:
-    """Measure exposure, tone, parametric and vibrance responses from the bakes in ``lut_dir``.
+    """Measure exposure, tone, parametric, vibrance and white-balance responses from the bakes in
+    ``lut_dir``.
 
-    Sliders without any bake keep their curves from ``base`` (default: the shipped response).
+    Sliders without any bake keep their curves from ``base`` (default: the shipped response, or
+    the identity response when the shipped file can't be read). A white-balance channel that a
+    bake can't measure keeps the base value too; ``warnings`` lists every such fallback.
     """
-    base = base if base is not None else response.load()
+    warnings: list[str] = []
+    if base is None:
+        try:
+            base = response.load()
+        except ColorlabError as exc:
+            base = response.identity()
+            warnings.append(f"base response unreadable ({exc}); sliders without bakes are identity")
     luts = {v.name: read_cube(p) for v in variants if (p := Path(lut_dir) / f"{v.name}.cube").is_file()}
     if not luts:
         raise ColorlabError(f"no calibration bakes (.cube) found in {lut_dir}")
@@ -375,7 +386,7 @@ def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS
         return {float(v.settings[key]): luts[v.name] for v in variants
                 if set(v.settings) == {key} and not v.curves and v.name in luts}
 
-    report = ResponseReport(response=base)
+    report = ResponseReport(response=base, warnings=warnings)
     tone = {}
     for key in response.TONE_KEYS:
         found = solo(key)
@@ -401,12 +412,19 @@ def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS
     for _label, key, partner in _WB_KEYS:
         found = {float(v.settings[key]): luts[v.name] for v in variants
                  if v.name in luts and v.settings.get(partner) == "0" and float(v.settings.get(key, 0)) != 0}
+        base_table = base.white_balance.temperature if key == "IncrementalTemperature" else base.white_balance.tint
         if found:
-            wb_tables[key] = {a: _white_balance_stops(lut, exposure) for a, lut in found.items()}
+            wb_tables[key] = {}
+            for a, lut in found.items():
+                stops = _white_balance_stops(lut, exposure)
+                if np.isnan(stops).any():
+                    lost = ", ".join("RGB"[ch] for ch in np.flatnonzero(np.isnan(stops)))
+                    report.warnings.append(f"{key} {a:+g}: no usable samples for {lost}; kept the base stops")
+                    stops = np.where(np.isnan(stops), response._table_at(base_table, a), stops)
+                wb_tables[key][a] = stops
             report.measured.append(key)
         else:
-            base_wb = base.white_balance
-            wb_tables[key] = base_wb.temperature if key == "IncrementalTemperature" else base_wb.tint
+            wb_tables[key] = base_table
             report.kept.append(key)
     white_balance = response.WhiteBalanceResponse(wb_tables["IncrementalTemperature"], wb_tables["IncrementalTint"])
     report.response = response.Response(exposure=exposure, tone=tone, vibrance=vibrance, white_balance=white_balance)
@@ -426,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
     fp.add_argument("lut_dir", type=Path)
     fp.add_argument("--grid", type=int, default=17, help="sample grid size per axis (default 17)")
     fp.add_argument("--json", type=Path, help="also write the report as JSON")
-    rp = sub.add_parser("response", help="measure exposure/tone/parametric/vibrance shapes from the bakes")
+    rp = sub.add_parser("response", help="measure exposure/tone/parametric/vibrance/white-balance shapes from the bakes")
     rp.add_argument("lut_dir", type=Path)
     rp.add_argument("--out", type=Path, required=True,
                     help="response file to write (the shipped one is src/colorlab/data/lightroom_response.json)")
@@ -437,6 +455,8 @@ def main(argv: list[str] | None = None) -> int:
             response.save(measured.response, args.out)
             print(f"measured: {', '.join(measured.measured) or '-'}")
             print(f"kept (no bakes): {', '.join(measured.kept) or '-'}")
+            for warning in measured.warnings:
+                print(f"warning: {warning}")
             print(f"wrote {args.out}")
             return 0
         if args.command == "presets":

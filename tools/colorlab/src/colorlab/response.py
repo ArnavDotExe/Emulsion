@@ -262,6 +262,18 @@ class Response:
             raise ColorlabError(f"malformed slider response data: {exc!r}") from exc
 
 
+def identity() -> Response:
+    """A response in which every measured slider does nothing; the base for a first measurement."""
+    flat = {100.0: X.copy()}
+    return Response(
+        exposure=ExposureShoulder(shoulder=5.0, strength=1.0),
+        tone={k: CurveFamily(flat) for k in TONE_KEYS},
+        vibrance=VibranceResponse(chroma=(0.0, 1.0), pivots=(0.5, 0.5),
+                                  gains={100.0: np.ones(2)}, bands={100.0: np.ones(8)}),
+        white_balance=WhiteBalanceResponse(temperature={100.0: np.zeros(3)}, tint={100.0: np.zeros(3)}),
+    )
+
+
 def default_path() -> Path:
     return Path(str(resources.files("colorlab") / "data" / "lightroom_response.json"))
 

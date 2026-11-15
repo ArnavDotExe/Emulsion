@@ -8,8 +8,8 @@ parametric curve and vibrance take their shapes from measured Lightroom response
 single-slider Lightroom bakes (``colorlab.calibration``).
 
 Working space is ProPhoto RGB primaries. Every stage runs on sRGB-curve encoded
-values, the space Lightroom's tone curve panel shows. Spatial effects (grain, vignette, highlights/shadows,
-clarity, texture, dehaze, sharpening, noise reduction) belong to a later stage and
+values, the space Lightroom's tone curve panel shows. Spatial effects (grain,
+vignette, highlights/shadows, clarity, texture, dehaze, sharpening, noise reduction) belong to a later stage and
 are not applied here.
 """
 from __future__ import annotations
@@ -33,8 +33,17 @@ BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"
 _BAND_CENTERS = np.array([0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0, 360.0])
 _LUMA = WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
 
-#: measured shapes of white balance, exposure, the tone sliders, the parametric curve and vibrance
-RESPONSE: response.Response = response.load()
+#: measured shapes of white balance, exposure, the tone sliders, the parametric curve and vibrance;
+#: read from the shipped file on first use, so a broken file never stops ``calibration`` from
+#: importing (and regenerating it)
+RESPONSE: response.Response | None = None
+
+
+def _response() -> response.Response:
+    global RESPONSE
+    if RESPONSE is None:
+        RESPONSE = response.load()
+    return RESPONSE
 
 # Stage strengths (slider value 100 == full strength), fitted with `colorlab.calibration`
 # to single-slider Lightroom bakes (2026-11-15, 143 bakes).
@@ -148,15 +157,15 @@ def white_balance(enc: np.ndarray, temperature: float = 0.0, tint: float = 0.0) 
     enc = _as_rgb(enc)
     if temperature == 0 and tint == 0:
         return enc
-    return RESPONSE.exposure.apply(enc, RESPONSE.white_balance.evs(temperature, tint))
-
+    r = _response()
+    return r.exposure.apply(enc, r.white_balance.evs(temperature, tint))
 
 
 def exposure(enc: np.ndarray, ev: float) -> np.ndarray:
     """Exposure in stops (-5..5): Lightroom's shoulder, which keeps white and never clips."""
     _check("exposure", ev, -5, 5)
     enc = _as_rgb(enc)
-    return enc if ev == 0 else RESPONSE.exposure.apply(enc, ev)
+    return enc if ev == 0 else _response().exposure.apply(enc, ev)
 
 
 def tone(enc: np.ndarray, contrast: float = 0.0, whites: float = 0.0, blacks: float = 0.0) -> np.ndarray:
@@ -167,8 +176,9 @@ def tone(enc: np.ndarray, contrast: float = 0.0, whites: float = 0.0, blacks: fl
     if contrast == 0 and whites == 0 and blacks == 0:
         return enc
     e = np.clip(enc, 0.0, 1.0)
+    tones = _response().tone
     for key, v in (("Contrast2012", contrast), ("Whites2012", whites), ("Blacks2012", blacks)):
-        e = RESPONSE.tone[key].apply(e, v)
+        e = tones[key].apply(e, v)
     return e
 
 
@@ -188,9 +198,10 @@ def parametric_curve(enc: np.ndarray, shadows: float = 0.0, darks: float = 0.0, 
     # tonal axis so each region keeps its place, and the regions apply one after another.
     custom, default = (0.0, s1, s2, s3, 1.0), (0.0, 0.25, 0.5, 0.75, 1.0)
     e = np.interp(np.clip(enc, 0.0, 1.0), custom, default)
+    tones = _response().tone
     for key, amount in zip(("ParametricShadows", "ParametricDarks", "ParametricLights", "ParametricHighlights"),
                            amounts):
-        e = RESPONSE.tone[key].apply(e, amount)
+        e = tones[key].apply(e, amount)
     return np.interp(e, default, custom)
 
 
@@ -312,7 +323,7 @@ def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: floa
     enc = _as_rgb(enc)
     if vibrance:
         h, c = _hue(enc)
-        vib = RESPONSE.vibrance
+        vib = _response().vibrance
         gain = np.maximum(vib.gain(c, _band_weights(h), vibrance), 0.0)
         pivot = enc.min(axis=-1) + vib.pivot(vibrance) * c  # a gray between the min and max channel
         enc = pivot[..., None] + gain[..., None] * (enc - pivot[..., None])

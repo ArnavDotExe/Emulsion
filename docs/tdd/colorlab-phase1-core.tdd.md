@@ -222,6 +222,28 @@ Re-bake of Temperature/Tint ±25 (`out/cal-redo4-kit`, all 147 bakes present):
 Known gaps: Temperature −100 (13.4) and ±100 still miss on saturated colors. Lightroom's white balance isn't
 purely per-channel there, and the sRGB output clips.
 
+### Review fixes (PR #1): regeneration without a readable base
+
+Journey: as the maintainer, I can always regenerate `lightroom_response.json` with
+`calibration response`, even after the file breaks or its format gains a key, and a bake that
+can't measure a white-balance channel never silently ships "0 stops".
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | `colorlab.calibration` imports when the shipped response can't be read | `test_calibration_imports_even_when_the_shipped_response_is_unreadable` | PASS |
+| 2 | `pipeline` reads the response on first use and reports a broken file as `ColorlabError` | `test_pipeline_reads_the_response_on_first_use_and_reports_a_broken_file` | PASS |
+| 3 | Without a readable base, `measure_response` starts from `response.identity()` and warns | `test_measure_response_without_a_readable_base_uses_identity_and_warns` | PASS |
+| 4 | A white-balance bake with no usable samples keeps the base stops and warns | `test_white_balance_bake_without_usable_samples_keeps_the_base_and_warns` | PASS |
+| 5 | The `response` CLI prints each warning | `test_cli_response_prints_warnings` | PASS |
+
+- RED `0bb61e6`: all 5 failed for the intended reasons. The import died at
+  `pipeline.py:37` (`response.load()` at import), there was no `ResponseReport.warnings`, and
+  the CLI exited 1.
+- GREEN: `RESPONSE` is loaded lazily through `pipeline._response()`. `response.identity()` is
+  the fallback base. `_white_balance_stops` marks channels it can't measure as NaN, and
+  `measure_response` replaces them with the base and records a warning.
+- Results: the public suite passes at 97.49% coverage; the private accuracy suite passes unchanged.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
