@@ -22,7 +22,9 @@ def test_white_and_black_in_lab():
 def test_srgb_to_lab_matches_colour_science():
     rgb = np.random.default_rng(1).random((500, 3))
     expected = colour.XYZ_to_Lab(colour.sRGB_to_XYZ(rgb))
-    np.testing.assert_allclose(srgb_to_lab(rgb), expected, atol=1e-3)
+    # colour-science uses the 4-decimal matrix printed in IEC 61966-2-1; ours is derived exactly
+    # from the primaries, which differs by up to ~0.02 in L*a*b*.
+    np.testing.assert_allclose(srgb_to_lab(rgb), expected, atol=0.05)
 
 
 @pytest.mark.parametrize("lab1,lab2,expected", SHARMA)

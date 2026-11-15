@@ -20,6 +20,7 @@ import re
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
@@ -114,6 +115,45 @@ def make_bake_xmp(xmp_text: str, name: str) -> str:
     return xmp_text[: m.start()] + tag + rest
 
 
+_SIDECAR_NAMESPACES = {
+    "xmlns:xmp": "http://ns.adobe.com/xap/1.0/",
+    "xmlns:xmpMM": "http://ns.adobe.com/xap/1.0/mm/",
+    "xmlns:dc": "http://purl.org/dc/elements/1.1/",
+}
+
+
+def make_sidecar_xmp(xmp_text: str) -> str:
+    """Dress a preset up as a Lightroom sidecar so Lightroom applies it to the image on import.
+
+    Lightroom picked up embedded settings only from TIFFs whose XMP looked like one of its own
+    sidecars (``crs:AlreadyApplied="False"``, metadata dates and document IDs).
+    """
+    m = _START_TAG.search(xmp_text)
+    if m is None:
+        raise PresetFormatError("preset has no rdf:Description element")
+    tag = m.group(0)
+    for qname, uri in _SIDECAR_NAMESPACES.items():
+        if f"{qname}=" not in tag:
+            tag = _set_attr(tag, qname, uri, insert=True)
+    if "crs:ProcessVersion=" not in tag:
+        tag = _set_attr(tag, "crs:ProcessVersion", "11.0", insert=True)
+    now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    doc = str(uuid.uuid4())
+    for qname, value in (
+        ("dc:format", "image/tiff"),
+        ("xmp:CreatorTool", "FilmSim colorlab"),
+        ("xmp:ModifyDate", now),
+        ("xmp:MetadataDate", now),
+        ("crs:HasSettings", "True"),
+        ("crs:AlreadyApplied", "False"),
+        ("xmpMM:DocumentID", f"xmp.did:{doc}"),
+        ("xmpMM:InstanceID", f"xmp.iid:{doc}"),
+        ("xmpMM:OriginalDocumentID", f"xmp.did:{doc}"),
+    ):
+        tag = _set_attr(tag, qname, value, insert=True)
+    return xmp_text[: m.start()] + tag + xmp_text[m.end() :]
+
+
 # --- Hald TIFFs ------------------------------------------------------------------------------
 
 def write_hald_tiff(path: str | Path, level: int = DEFAULT_LEVEL, xmp: str | None = None) -> None:
@@ -177,11 +217,11 @@ Lightroom Classic
 1. File > Import Develop Profiles and Presets... and select every file in presets/.
    They appear in the preset group "FilmSim Bake". Any profiles your presets depend on
    (for example profile/look .xmp files) must be installed too.
-2. Import the hald/ folder (Add, don't move or copy).
-3. Lightroom reads the embedded settings for some images and not others, so don't
-   rely on it. Apply to each image the "FilmSim Bake" preset with the same name.
-   Tip: in Develop, select an image and click its preset; filmstrip thumbnails that
-   still look like a plain, unedited color grid haven't been done yet.
+2. Import the hald/ folder (Add, don't move or copy). Each image carries its bake
+   settings as an embedded Lightroom sidecar, so Lightroom should apply them on import.
+3. Check the filmstrip: an image that still looks like a plain, unedited color grid
+   didn't pick its settings up. Apply to it the "FilmSim Bake" preset with the same
+   name. (`collect` also lists any export that comes back unedited.)
 4. Don't crop, rotate, resize or otherwise edit the images.
 5. Select all of them and choose File > Export:
      File Naming:    Filename (keep the original names)
@@ -214,7 +254,7 @@ def write_bake_kit(preset_dir: str | Path, out_dir: str | Path, level: int = DEF
         baked = make_bake_xmp(p.source.read_text(encoding="utf-8-sig"), name)
         (out / "presets").mkdir(parents=True, exist_ok=True)
         (out / "presets" / f"{name}.xmp").write_text(baked, encoding="utf-8")
-        write_hald_tiff(out / "hald" / f"{name}.tif", level, xmp=baked)
+        write_hald_tiff(out / "hald" / f"{name}.tif", level, xmp=make_sidecar_xmp(baked))
         entries.append(KitEntry(name, p.name, p.source.resolve().relative_to(root).as_posix()))
     out.mkdir(parents=True, exist_ok=True)
     manifest = {"version": 1, "level": level, "entries": [asdict(e) for e in entries]}
