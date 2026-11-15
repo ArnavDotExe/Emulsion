@@ -127,7 +127,7 @@ Guarantees:
 - `metrics`: Lab matches colour-science. CIEDE2000 matches the Sharma reference pairs within 1e-4
   and colour-science within 1e-6, is symmetric, and is zero for equal colors.
 - `calibration`: variant names are unique and file-safe. Every `K_*` strength has search bounds
-  (tone-curve bounds keep curves monotonic) and at least one variant. Every slider family and HSL band
+  and at least one variant (tone shapes are measured instead; see below). Every slider family and HSL band
   is covered. B&W variants set the whole mixer, so Lightroom's auto-mix can't leak in. Variant XMPs are
   complete presets that feed `bake kit` directly.
 - The fitter recovers known strengths from synthetic bakes within 2%, restores the pipeline's
@@ -137,6 +137,46 @@ Guarantees:
   a distinct document ID each). Existing values are replaced, not duplicated. A missing process version
   becomes 11.0. That Lightroom then auto-applies the settings is a **hypothesis** and still has to be
   confirmed in Lightroom.
+
+## Measured slider shapes (`colorlab.response`)
+
+Journey: *As a maintainer, I want exposure, Whites/Blacks/Contrast, the parametric curve and
+vibrance to follow Lightroom's own response curves, measured from the single-slider bakes,
+because fitting one strength to a guessed formula left most of the remaining error in those stages.*
+
+What the 113 bakes showed (neutral ramps and colored samples, working-space encoded):
+- These tone sliders act per channel in our working space. Applying Lightroom's own neutral curve
+  per channel reproduces the colored bakes to 1–4 ΔE.
+- Exposure keeps white at 1 and rolls the highlights off. `T(2^(0.9·ev)·T⁻¹(x))` with
+  `T(s) = 1 − (1 + s/3.6)^−3.6` fits the ±1 EV bakes within 0.009.
+- Whites + clips before 1 (from x ≈ 0.75 at +100). Blacks − crushes a whole range (up to x ≈ 0.3 at −100).
+- Vibrance pivots between each color's min and max channel, at 0.6 for − and 0.9 for +. Lightroom's
+  "luma" barely weights ProPhoto blue, so drained blues brighten. The gain falls with chroma, and +
+  protects reds and oranges.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest` | `test_response.py` and `test_calibration.py` cannot import `colorlab.response`. 9 `test_pipeline.py` specs fail on the old shapes (commit 5fa4470) |
+| GREEN | `pytest`, then `pytest --cov` | First run: 3 failures. A curve blended toward identity never clips, so the interpolation now moves the clip points linearly and blends the shape between them. The vibrance spec's "muted" color sat at a skin hue, which Lightroom protects; the spec now uses a muted green and adds an explicit skin-protection test. Clipped colors skewed the vibrance pivot measure, so they're now left out of the gain estimate. Then everything passes, **98% coverage** (commit be16d19) |
+| Real run | `calibration response out/cal-luts --out src/colorlab/data/lightroom_response.json` | All 9 sliders measured: exposure shoulder 3.6, strength 0.9, vibrance pivots 0.6 / 0.9 |
+| Real run | `calibration fit out/cal-luts` | Remaining strengths unchanged. Mean ΔE over 113 bakes 2.90 → **2.29**. For example Whites +100 13.65 → 4.19, Blacks −100 9.56 → 1.11, Parametric Lights −100 10.08 → 2.57, Vibrance −100 7.51 → 4.94 |
+| Real run | 44 private presets | median ΔE 4.22 → **3.40**, mean 4.90 → **4.54** (private threshold tightened to 3.45 / 4.60) |
+
+Guarantees:
+- Tone families are identity at 0, exact at baked amounts, monotonic in between, clamp outside the
+  baked range, and move clip points between amounts. Malformed tables are rejected.
+- The exposure shoulder keeps 0 and 1, never clips, brightens every midtone for +EV, and ±EV steps undo each other.
+- Vibrance gain is 1 at 0, follows the chroma table and band factors, and keeps hue and neutrals.
+- The shipped response has every tone family, round-trips through JSON, and refuses a file missing one.
+- `measure_response` reads tone curves from neutral ramps, recovers a known exposure shoulder and a
+  known vibrance pivot and gain from synthetic bakes, and keeps shipped curves for sliders without bakes.
+- The kit now bakes exposure at ±0.5/±1/±2, Contrast/Whites/Blacks and Vibrance at ±25/±50/±100,
+  and every parametric region at ±50/±100.
+
+Known gaps: Contrast, Whites, Blacks and Vibrance at ±25, the parametric regions at ±50, and exposure
+at ±0.5 and ±2 aren't baked yet. Until they are, those amounts are interpolated (exposure extrapolates
+via the shoulder model). The remaining tone error (Whites +100 4.2, Parametric Lights +100 3.5) is
+Lightroom not acting purely per channel at the extremes.
 
 ## Coverage and known gaps
 
