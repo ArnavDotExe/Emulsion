@@ -37,3 +37,6 @@ desktop.ini
 
 # --- Local Claude Code state ----------------------------------------------
 .claude/settings.local.json
+
+# Local reverse-engineering notes and decompiled third-party code: never commit
+lrReverse/
