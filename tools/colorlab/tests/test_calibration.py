@@ -151,3 +151,35 @@ def test_cli_presets_and_fit(tmp_path, capsys):
 def test_cli_fit_without_any_bakes_fails(tmp_path, capsys):
     assert main(["fit", str(tmp_path)]) == 1
     assert "no calibration bakes" in capsys.readouterr().err
+
+
+# --- Lightroom ignored these in the first real bake ----------------------------------------------
+
+CURVE_KEYS = {"ToneCurvePV2012", "ToneCurvePV2012Red", "ToneCurvePV2012Green", "ToneCurvePV2012Blue"}
+
+
+def test_white_balance_variants_set_temperature_and_tint_together():
+    wb = [v for v in VARIANTS if any(k.startswith("Incremental") for k in v.settings)]
+    assert wb
+    for v in wb:
+        assert {"IncrementalTemperature", "IncrementalTint"} <= set(v.settings), v.name
+
+
+def test_curve_variants_list_all_four_curves():
+    curved = [v for v in VARIANTS if v.curves]
+    assert curved
+    for v in curved:
+        assert set(v.curves) == CURVE_KEYS, v.name
+
+
+def test_cli_presets_only_missing_writes_just_the_unbaked_variants(tmp_path, capsys):
+    luts = tmp_path / "luts"
+    luts.mkdir()
+    done = [v for v in VARIANTS if not v.name.startswith(("Cal Tint", "Cal Curve"))]
+    for v in done:
+        (luts / f"{v.name}.cube").write_text("", encoding="utf-8")
+    out = tmp_path / "redo"
+    assert main(["presets", str(out), "--only-missing", str(luts)]) == 0
+    written = sorted(p.stem for p in out.glob("*.xmp"))
+    assert written == sorted(v.name for v in VARIANTS if v not in done)
+    assert f"wrote {len(written)} calibration preset" in capsys.readouterr().out
