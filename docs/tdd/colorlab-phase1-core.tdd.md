@@ -274,6 +274,23 @@ Amounts come from what the private presets use:
 - Open question: Lightroom's local-tone radii may scale with image size. The charts are 1536×1024;
   a second size may be needed once the first measurements are in.
 
+### Image-size test kit (`--scale-test`)
+
+Journey: as the maintainer, I can find out whether Lightroom's spatial effects scale with image
+size. The same charts are rendered at 768×512 and 3072×2048 (half and double the frame), with the
+same settings as the 1536×1024 kit.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | `charts(size)` scales every feature with the frame: region boxes, bar periods and checker cell | `test_charts_scale_with_the_frame` | PASS |
+| 2 | `SCALE_VARIANTS` repeat 11 base variants (3 identities, Shadows, Clarity ±50, Texture, Dehaze, Sharpen, Grain, Vignette) at both sizes with identical settings | `test_scale_variants_repeat_base_settings_at_each_size` | PASS |
+| 3 | The kit writes each image at its own size and records it per manifest entry; `collect` checks each entry against its own size | `test_scale_kit_writes_each_image_at_its_own_size_and_collect_checks_it` | PASS |
+| 4 | `kit --scale-test` writes the size-test variants | `test_cli_kit_scale_test` | PASS |
+
+- RED `57d8897`: `ImportError: cannot import name 'SCALE_SIZES'`.
+- GREEN: 32 spatial tests pass; full suite 355 passed, 98% coverage.
+- The kit is built at `out/spatial-scale-kit`: 22 images, 421 MB.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

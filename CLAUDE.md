@@ -96,7 +96,8 @@ python -m colorlab.calibration fit out/cal-luts --json out/cal-fit.json   # then
 Spatial loop (task 6b): `python -m colorlab.spatial_calibration kit out/spatial-kit`, import
 `images/` into Lightroom and export per the kit README, then
 `python -m colorlab.spatial_calibration collect <exports> out/spatial-kit out/spatial-exports`.
-Each export is compared with its chart's `Spatial Identity` export.
+Each export is compared with its chart's `Spatial Identity` export. `kit --scale-test` writes the image-size test (the same effects at
+768×512 and 3072×2048) into a separate kit.
 
 Lightroom quirks:
 - It ignores a lone `IncrementalTemperature` or `IncrementalTint`; set both, with `WhiteBalance=Custom`.

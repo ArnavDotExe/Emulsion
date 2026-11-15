@@ -35,11 +35,12 @@ from .bake import make_sidecar_xmp, read_rgb_tiff, write_rgb_tiff16
 from .calibration import Variant, variant_xmp
 from .errors import ColorlabError
 
-__all__ = ["CHARTS", "SIZE", "SPATIAL_GROUP", "SPATIAL_VARIANTS", "SpatialVariant", "charts",
-           "collect_spatial", "main", "read_rgb_tiff", "write_spatial_kit"]
+__all__ = ["CHARTS", "SCALE_SIZES", "SCALE_VARIANTS", "SIZE", "SPATIAL_GROUP", "SPATIAL_VARIANTS", "SpatialVariant",
+           "charts", "collect_spatial", "main", "read_rgb_tiff", "write_spatial_kit"]
 
 SPATIAL_GROUP = "FilmSim Spatial Calibration"
 SIZE = (1024, 1536)  # height, width: a 3:2 frame like a photo
+SCALE_SIZES = ((512, 768), (2048, 3072))  # the image-size test: half and double the frame
 CHARTS = ("scene", "levels", "checker")
 
 #: an export whose 99.9th-percentile difference from its chart is below this had no preset applied
@@ -54,8 +55,13 @@ def _region(kind: str, box: tuple[int, int, int, int], **extra) -> dict:
     return {"kind": kind, "box": [int(v) for v in box], **extra}
 
 
-def _scene() -> tuple[np.ndarray, dict]:
-    h, w = SIZE
+def _px(n: int, size: tuple[int, int]) -> int:
+    """A feature size in pixels, scaled from the default frame width to ``size``."""
+    return max(1, round(n * size[1] / SIZE[1]))
+
+
+def _scene(size: tuple[int, int]) -> tuple[np.ndarray, dict]:
+    h, w = size
     img = np.zeros((h, w, 3))
     regions: dict[str, dict] = {}
     # left half: 2 x 4 big flat patches, dark to light
@@ -69,10 +75,10 @@ def _scene() -> tuple[np.ndarray, dict]:
     lo, hi = 0.2, 0.8
     x = w // 2
     seg = (w // 2) // 6
-    for width in (2, 4, 8, 16, 32, 64):
+    for i, width in enumerate(_px(b, size) for b in (2, 4, 8, 16, 32, 64)):
         cols = np.arange(seg)
         img[0:h // 2, x:x + seg] = np.where((cols // width) % 2 == 0, lo, hi)[None, :, None]
-        regions[f"bars {width}px"] = _region("bars", (0, h // 2, x, x + seg), period=2 * width, levels=[lo, hi])
+        regions[f"bars {i}"] = _region("bars", (0, h // 2, x, x + seg), period=2 * width, levels=[lo, hi])
         x += seg
     # right, third quarter: a smooth horizontal ramp
     x0, y0, y1 = w // 2, h // 2, 3 * h // 4
@@ -90,8 +96,8 @@ def _scene() -> tuple[np.ndarray, dict]:
     return img, regions
 
 
-def _levels() -> tuple[np.ndarray, dict]:
-    h, w = SIZE
+def _levels(size: tuple[int, int]) -> tuple[np.ndarray, dict]:
+    h, w = size
     img = np.zeros((h, w, 3))
     regions: dict[str, dict] = {}
     levels = (0.05, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 0.97)
@@ -109,9 +115,9 @@ def _levels() -> tuple[np.ndarray, dict]:
     return img, regions
 
 
-def _checker() -> tuple[np.ndarray, dict]:
-    h, w = SIZE
-    cell = 32
+def _checker(size: tuple[int, int]) -> tuple[np.ndarray, dict]:
+    h, w = size
+    cell = max(2, _px(32, size))
     levels = (0.2, 0.45, 0.7, 0.95)
     rows, cols = np.arange(h)[:, None] // cell, np.arange(w)[None, :] // cell
     index = (rows % 2) * 2 + (cols % 2)  # every 2 x 2 block holds all four levels
@@ -119,9 +125,11 @@ def _checker() -> tuple[np.ndarray, dict]:
     return img, {"checker": _region("checker", (0, h, 0, w), cell=cell, levels=list(levels))}
 
 
-def charts() -> tuple[dict[str, np.ndarray], dict[str, dict]]:
-    """The three charts (sRGB-encoded 0-1 images of ``SIZE``) and each chart's named regions."""
-    built = {"scene": _scene(), "levels": _levels(), "checker": _checker()}
+def charts(size: tuple[int, int] = SIZE) -> tuple[dict[str, np.ndarray], dict[str, dict]]:
+    """The three charts (sRGB-encoded 0-1 images of ``size``, default ``SIZE``) and each chart's
+    named regions. At other sizes every feature scales with the frame width, like a resized photo."""
+    size = (int(size[0]), int(size[1]))
+    built = {"scene": _scene(size), "levels": _levels(size), "checker": _checker(size)}
     return {k: v[0] for k, v in built.items()}, {k: v[1] for k, v in built.items()}
 
 
@@ -134,10 +142,11 @@ class SpatialVariant:
     name: str
     chart: str
     settings: Mapping[str, str]
+    size: tuple[int, int] = SIZE
 
     @property
     def baseline(self) -> bool:
-        return self.name.startswith("Spatial Identity")
+        return " Identity " in f"{self.name} "
 
 
 #: every variant pins the spatial sliders Lightroom might default on for a TIFF
@@ -190,6 +199,23 @@ def _build() -> tuple[SpatialVariant, ...]:
 
 SPATIAL_VARIANTS: tuple[SpatialVariant, ...] = _build()
 
+_SCALE_EFFECTS = ("Identity Scene", "Identity Levels", "Identity Checker", "Shadows +50", "Clarity +50",
+                  "Clarity -50", "Texture +50", "Dehaze +50", "Sharpen 50", "Grain 50", "Vignette -50")
+
+
+def _build_scale() -> tuple[SpatialVariant, ...]:
+    by_name = {v.name: v for v in SPATIAL_VARIANTS}
+    out = []
+    for h, w in SCALE_SIZES:
+        for effect in _SCALE_EFFECTS:
+            ref = by_name[f"Spatial {effect}"]
+            out.append(SpatialVariant(f"Spatial {w}x{h} {effect}", ref.chart, ref.settings, (h, w)))
+    return tuple(out)
+
+
+#: the image-size test: the same settings on the same charts at half and double the frame
+SCALE_VARIANTS: tuple[SpatialVariant, ...] = _build_scale()
+
 
 # --- kit -----------------------------------------------------------------------------------------
 
@@ -223,28 +249,39 @@ Lightroom Classic
 """
 
 
+def _chart_key(chart: str, size: tuple[int, int]) -> str:
+    """Manifest key of a chart's regions: its name at the default size, else "name WxH"."""
+    return chart if tuple(size) == SIZE else f"{chart} {size[1]}x{size[0]}"
+
+
 def write_spatial_kit(out_dir: str | Path, variants: Sequence[SpatialVariant] = SPATIAL_VARIANTS) -> list[Path]:
     """Write a chart image (with its settings embedded) and a preset per variant, plus the manifest."""
     out = Path(out_dir)
     if out.exists() and any(out.iterdir()):
         raise FileExistsError(f"{out} is not empty; choose a new folder for the spatial calibration kit")
-    imgs, regions = charts()
+    built: dict[tuple[int, int], tuple[dict, dict]] = {}
+    chart_regions: dict[str, dict] = {}
     (out / "presets").mkdir(parents=True, exist_ok=True)
     paths = []
     for v in variants:
+        if v.size not in built:
+            built[v.size] = charts(v.size)
+            for chart, regs in built[v.size][1].items():
+                chart_regions[_chart_key(chart, v.size)] = regs
         xmp = variant_xmp(Variant(v.name, v.settings), group=SPATIAL_GROUP)
         (out / "presets" / f"{v.name}.xmp").write_text(xmp, encoding="utf-8")
         path = out / "images" / f"{v.name}.tif"
-        write_rgb_tiff16(path, imgs[v.chart], xmp=make_sidecar_xmp(xmp))
+        write_rgb_tiff16(path, built[v.size][0][v.chart], xmp=make_sidecar_xmp(xmp))
         paths.append(path)
     manifest = {
         "version": 1,
         "size": list(SIZE),
-        "charts": regions,
-        "entries": [{**asdict(v), "settings": dict(v.settings), "baseline": v.baseline} for v in variants],
+        "charts": chart_regions,
+        "entries": [{**asdict(v), "size": list(v.size), "settings": dict(v.settings), "baseline": v.baseline}
+                    for v in variants],
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
-    mb = round(len(variants) * SIZE[0] * SIZE[1] * 6 / 1e6)
+    mb = round(sum(v.size[0] * v.size[1] for v in variants) * 6 / 1e6)
     (out / "README.txt").write_text(
         README.format(n=len(variants), w=SIZE[1], h=SIZE[0], group=SPATIAL_GROUP, mb=mb), encoding="utf-8")
     return paths
@@ -263,7 +300,6 @@ def collect_spatial(export_dir: str | Path, kit_dir: str | Path, out_dir: str | 
     """Check Lightroom's exports against the kit and copy the usable ones into ``out_dir``."""
     kit = Path(kit_dir)
     manifest = json.loads((kit / "manifest.json").read_text(encoding="utf-8"))
-    h, w = manifest["size"]
     exports = {p.stem.lower(): p for p in Path(export_dir).glob("*") if p.suffix.lower() in (".tif", ".tiff")}
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -275,6 +311,7 @@ def collect_spatial(export_dir: str | Path, kit_dir: str | Path, out_dir: str | 
             report.missing.append(name)
             continue
         data = read_rgb_tiff(path)
+        h, w = entry.get("size", manifest["size"])
         if data.shape[:2] != (h, w):
             raise ColorlabError(f"{path}: export is {data.shape[1]}x{data.shape[0]}, expected {w}x{h} "
                                 "(turn Resize to Fit off and don't crop)")
@@ -296,6 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     kit = sub.add_parser("kit", help="write the chart images and presets for Lightroom")
     kit.add_argument("out_dir", type=Path)
+    kit.add_argument("--scale-test", action="store_true",
+                     help="write the image-size test instead: a few effects at half and double the frame")
     col = sub.add_parser("collect", help="check Lightroom's exports and copy them next to the manifest")
     col.add_argument("export_dir", type=Path)
     col.add_argument("kit_dir", type=Path)
@@ -303,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "kit":
-            paths = write_spatial_kit(args.out_dir)
+            paths = write_spatial_kit(args.out_dir, SCALE_VARIANTS if args.scale_test else SPATIAL_VARIANTS)
             print(f"wrote {len(paths)} spatial calibration image(s) and preset(s) to {args.out_dir}; "
                   "see README.txt there")
         else:
