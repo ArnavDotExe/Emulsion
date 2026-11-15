@@ -201,12 +201,36 @@ def test_collect_bakes_rejects_wrong_level(tmp_path):
         collect_bakes(exports, kit, tmp_path / "luts")
 
 
+def test_collect_bakes_reports_untouched_exports_instead_of_writing_identity_luts(tmp_path):
+    presets = make_preset_dir(tmp_path / "presets")
+    kit = tmp_path / "kit"
+    write_bake_kit(presets, kit, level=2)
+    exports = tmp_path / "exports"
+    write_hald_tiff(exports / "FilmSim Bake - Test Preset.tif", level=2)  # Lightroom applied nothing
+    out = tmp_path / "luts"
+    report = collect_bakes(exports, kit, out)
+    assert report.unchanged == ["FilmSim Bake - Test Preset"]
+    assert report.collected == []
+    assert not (out / "Test Preset.cube").exists()
+
+
 def test_cli_kit_and_collect(tmp_path, capsys):
     presets = make_preset_dir(tmp_path / "presets")
     kit, exports, out = tmp_path / "kit", tmp_path / "exports", tmp_path / "luts"
     assert main(["kit", str(presets), str(kit), "--level", "2"]) == 0
-    write_hald_tiff(exports / "FilmSim Bake - Test Preset.tif", level=2)
+    exports.mkdir()
+    inverted = np.round((1.0 - hald_identity(2)) * 65535).astype(np.uint16)
+    tifffile.imwrite(exports / "FilmSim Bake - Test Preset.tif", inverted, photometric="rgb")
     assert main(["collect", str(exports), str(kit), str(out)]) == 0
     assert (out / "Test Preset.cube").is_file()
     text = capsys.readouterr().out
-    assert "1 bake preset" in text and "collected 1" in text
+    assert "1 bake preset" in text and "collected 1" in text and "unchanged 0" in text
+
+
+def test_cli_lists_untouched_exports(tmp_path, capsys):
+    presets = make_preset_dir(tmp_path / "presets")
+    kit, exports, out = tmp_path / "kit", tmp_path / "exports", tmp_path / "luts"
+    main(["kit", str(presets), str(kit), "--level", "2"])
+    write_hald_tiff(exports / "FilmSim Bake - Test Preset.tif", level=2)
+    main(["collect", str(exports), str(kit), str(out)])
+    assert "unchanged (preset not applied): FilmSim Bake - Test Preset" in capsys.readouterr().out
