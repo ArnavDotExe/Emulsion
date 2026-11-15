@@ -276,3 +276,17 @@ def test_cli_lists_untouched_exports(tmp_path, capsys):
     write_hald_tiff(exports / "Emulsion Bake - Test Preset.tif", level=2)
     main(["collect", str(exports), str(kit), str(out)])
     assert "unchanged (preset not applied): Emulsion Bake - Test Preset" in capsys.readouterr().out
+
+
+def test_collect_strips_the_pre_rename_prefix_from_old_kits(tmp_path):
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    old = "FilmSim Bake - Old Preset"  # kits made before the app was renamed to Emulsion
+    manifest = {"version": 1, "level": 2, "entries": [{"bake_name": old, "preset_name": "Old Preset", "source": "x.xmp"}]}
+    (kit / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    inverted = np.round((1.0 - hald_identity(2)) * 65535).astype(np.uint16)
+    tifffile.imwrite(exports / f"{old}.tif", inverted, photometric="rgb")
+    collect_bakes(exports, kit, tmp_path / "luts")
+    assert [p.name for p in (tmp_path / "luts").iterdir()] == ["Old Preset.cube"]
