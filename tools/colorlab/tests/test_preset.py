@@ -107,11 +107,11 @@ def test_nested_preset_parameters_do_not_override_top_level():
 # --- looks and tables -------------------------------------------------------------------
 
 def test_stubbed_look_reference():
-    look = """<crs:Look><rdf:Description crs:Name="Kodak Portra 400" crs:Amount="1.000000"
+    look = """<crs:Look><rdf:Description crs:Name="Sample Film" crs:Amount="1.000000"
        crs:UUID="96DE" crs:Stubbed="true"/></crs:Look>"""
     p = parse_preset(make_xmp(children=look))
     assert p.look is not None
-    assert (p.look.name, p.look.uuid, p.look.amount, p.look.stubbed) == ("Kodak Portra 400", "96DE", 1.0, True)
+    assert (p.look.name, p.look.uuid, p.look.amount, p.look.stubbed) == ("Sample Film", "96DE", 1.0, True)
     assert p.look.table is None
 
 
