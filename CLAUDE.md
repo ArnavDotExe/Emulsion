@@ -109,6 +109,18 @@ Lightroom quirks:
   pipeline) is done and calibrated against 143 single-slider bakes.
 - Accuracy against the user's 44 private presets: median ΔE2000 3.18, mean 4.39.
 - All 147 calibration bakes are collected (mean 2.22 ΔE); no re-bake is pending.
+- Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
+  - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
+    deterministic (repeat exports are bit-identical).
+  - Image size, from the same charts at 768, 1536 and 3072 px wide:
+    - Vignette is relative to the frame: the same falloff at every size.
+    - Clarity −50's halo grows with the image (7/14/27 px).
+    - Texture (4 px) and Sharpening (1 px) are fixed in pixels.
+    - Shadows shows no halo (edge-preserving).
+    - Grain grows slowly with image size: correlation 0.44/0.47/0.61 px, std 0.087/0.074/0.051 at Grain 50.
+    - Dehaze's halo grows to about 45 px, then stops growing.
+  - For the app: Texture, Sharpening and grain must render at the output resolution, or be
+    compensated, for previews to match exports.
 - 6b has started. The spatial calibration kit is built (`out/spatial-kit`, 70 images) and is waiting
   for the user to export it from Lightroom. Next: `collect`, then measure each effect and model it.
 - Biggest single-slider gaps:
