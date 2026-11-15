@@ -31,18 +31,19 @@ BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"
 _BAND_CENTERS = np.array([0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0, 360.0])
 _LUMA = WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
 
-# Stage strengths (slider value 100 == full strength). Tuned against Lightroom bakes.
-K_TEMPERATURE = 0.004  # log-gain per incremental temperature unit
-K_TINT = 0.003
-K_CONTRAST = 0.6  # log2 of the power applied at contrast 100
-K_WHITES = 0.6
-K_BLACKS = 0.6
-K_PARAMETRIC = 0.1  # peak lift of one parametric region at 100
-K_HUE = 0.5  # fraction of the gap to the neighbouring band at hue 100
-K_LUMINANCE = 0.3
-K_GRADE_SAT = 0.25
-K_GRADE_LUM = 0.25
-K_MIXER = 0.5
+# Stage strengths (slider value 100 == full strength), fitted with `colorlab.calibration`
+# to single-slider Lightroom bakes (2026-11-15, 113 bakes). Temperature/tint are not fitted yet.
+K_TEMPERATURE = 0.004  # log-gain per incremental temperature unit (first guess)
+K_TINT = 0.003  # first guess
+K_CONTRAST = 0.654  # log2 of the power applied at contrast 100
+K_WHITES = 0.892
+K_BLACKS = 0.908
+K_PARAMETRIC = 0.115  # peak lift of one parametric region at 100 (at its monotonic bound)
+K_HUE = 0.831  # fraction of the gap to the neighbouring band at hue 100
+K_LUMINANCE = 0.708
+K_GRADE_SAT = 0.231
+K_GRADE_LUM = 0.0868
+K_MIXER = 1.55
 
 CONTRAST_PIVOT = float(cs.encode(np.array(0.18), WORKING_TRANSFER))
 
