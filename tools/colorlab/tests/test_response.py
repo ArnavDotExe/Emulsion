@@ -19,6 +19,7 @@ from colorlab.response import (
     ExposureShoulder,
     Response,
     VibranceResponse,
+    WhiteBalanceResponse,
     load,
 )
 
@@ -104,6 +105,41 @@ def test_exposure_steps_undo_each_other():
     np.testing.assert_allclose(shoulder.apply(shoulder.apply(RAMP, 1.5), -1.5), RAMP, atol=1e-9)
 
 
+def test_exposure_shoulder_takes_one_ev_per_channel():
+    shoulder = ExposureShoulder(shoulder=3.6, strength=0.9)
+    rgb = np.repeat(RAMP[:, None], 3, axis=1)
+    out = shoulder.apply(rgb, np.array([1.0, 0.0, -1.0]))
+    np.testing.assert_allclose(out[:, 0], shoulder.apply(RAMP, 1.0))
+    np.testing.assert_array_equal(out[:, 1], RAMP)
+    np.testing.assert_allclose(out[:, 2], shoulder.apply(RAMP, -1.0))
+
+
+# --- white balance -----------------------------------------------------------------------------------
+
+def wb():
+    return WhiteBalanceResponse(
+        temperature={-100.0: np.array([1.0, 1.0, 3.6]), 100.0: np.array([1.6, 1.4, 0.0])},
+        tint={50.0: np.array([0.2, 0.0, 0.5])},
+    )
+
+
+def test_white_balance_evs_are_zero_at_zero_exact_when_baked_and_linear_between():
+    w = wb()
+    np.testing.assert_array_equal(w.evs(0, 0), np.zeros(3))
+    np.testing.assert_allclose(w.evs(100, 0), [1.6, 1.4, 0.0])
+    np.testing.assert_allclose(w.evs(-50, 0), [0.5, 0.5, 1.8])
+    np.testing.assert_allclose(w.evs(0, 100), [0.2, 0.0, 0.5])  # clamped to the baked range
+
+
+def test_white_balance_temperature_and_tint_add_in_stops():
+    np.testing.assert_allclose(wb().evs(100, 50), [1.8, 1.4, 0.5])
+
+
+def test_white_balance_rejects_bad_tables():
+    with pytest.raises(ColorlabError):
+        WhiteBalanceResponse(temperature={50.0: np.array([1.0, 2.0])}, tint={50.0: np.zeros(3)})
+
+
 # --- vibrance ------------------------------------------------------------------------------------
 
 def vib():
@@ -148,6 +184,14 @@ def test_shipped_response_has_every_tone_family():
             assert y[0] == pytest.approx(0, abs=1e-3) and y[-1] == pytest.approx(1, abs=1e-3), key
 
 
+def test_shipped_response_has_white_balance_for_every_baked_amount():
+    wb = load().white_balance
+    for table in (wb.temperature, wb.tint):
+        assert {-100.0, -50.0, 50.0, 100.0} <= set(table)
+    warm, cool = wb.evs(50, 0), wb.evs(-50, 0)
+    assert warm[0] > warm[2] and cool[2] > cool[0]
+
+
 def test_response_round_trips_through_json(tmp_path):
     r = load()
     path = tmp_path / "r.json"
@@ -158,6 +202,14 @@ def test_response_round_trips_through_json(tmp_path):
         for a, y in r.tone[key].curves.items():
             np.testing.assert_allclose(back.tone[key].curves[a], y, atol=1e-6)
     assert back.vibrance.pivots == r.vibrance.pivots
+    np.testing.assert_allclose(back.white_balance.evs(30, -20), r.white_balance.evs(30, -20), atol=1e-6)
+
+
+def test_response_without_white_balance_is_rejected():
+    d = load().to_dict()
+    del d["white_balance"]
+    with pytest.raises(ColorlabError, match="white_balance"):
+        Response.from_dict(d)
 
 
 def test_response_without_a_tone_family_is_rejected():

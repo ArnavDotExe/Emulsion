@@ -94,23 +94,42 @@ def test_apply_curves_master_hits_every_channel_and_rgb_curves_one_each():
     np.testing.assert_allclose(apply_curves(x, blue=lift), [[0, 0, 40 / 255]], atol=1e-12)
 
 
-# --- white balance and exposure (linear) ------------------------------------------------------
+# --- white balance and exposure (encoded, measured shapes) ---------------------------------------
 
 def test_white_balance_defaults_are_identity():
     np.testing.assert_array_equal(white_balance(GRAYS, 0, 0), GRAYS)
 
 
-def test_temperature_warms_and_tint_adds_magenta_while_keeping_brightness():
-    gray = np.array([0.18, 0.18, 0.18])
-    warm = white_balance(gray, temperature=50, tint=0)
-    assert warm[0] > gray[0] and warm[2] < gray[2]
-    cool = white_balance(gray, temperature=-50, tint=0)
-    assert cool[0] < gray[0] and cool[2] > gray[2]
-    magenta = white_balance(gray, temperature=0, tint=50)
-    assert magenta[1] < gray[1] and magenta[0] > gray[0]
-    y = cs.PROPHOTO_RGB.rgb_to_xyz[1]  # working-space luminance
-    for out in (warm, cool, magenta):
-        assert out @ y == pytest.approx(gray @ y, rel=1e-9)
+def test_white_balance_keeps_black_and_white_and_each_channel_monotonic():
+    # Lightroom on a rendered image: white stays white; each channel is brightened on its own curve.
+    for t, m in ((100, 0), (-100, 0), (0, 100), (0, -100), (40, -30)):
+        out = white_balance(GRAYS, temperature=t, tint=m)
+        np.testing.assert_allclose(out[0], 0, atol=1e-12)
+        np.testing.assert_allclose(out[-1], 1, atol=1e-12)
+        assert all(is_monotonic(out[:, c]) for c in range(3))
+
+
+def test_temperature_warms_and_tint_adds_magenta_by_brightening_the_other_channels():
+    gray = np.array([0.46, 0.46, 0.46])
+    warm = white_balance(gray, temperature=50)
+    assert warm[0] > warm[1] > gray[1] and warm[2] == pytest.approx(gray[2], abs=0.01)  # blue kept
+    cool = white_balance(gray, temperature=-50)
+    assert cool[2] > cool[1] > cool[0] >= gray[0]
+    magenta = white_balance(gray, tint=50)
+    assert magenta[2] > magenta[0] > gray[0] and magenta[1] == pytest.approx(gray[1], abs=0.01)  # green kept
+
+
+@pytest.mark.parametrize("settings,expected", [
+    # Lightroom bakes of gray 0.46 (sRGB in and out)
+    ({"IncrementalTemperature": "+50"}, (0.748, 0.624, 0.427)),
+    ({"IncrementalTemperature": "-50"}, (0.334, 0.527, 0.793)),
+    ({"IncrementalTint": "+100"}, (0.580, 0.431, 0.811)),
+    ({"IncrementalTint": "-100"}, (0.323, 0.737, 0.419)),
+])
+def test_render_white_balance_matches_lightroom_on_gray(settings, expected):
+    preset = parse_preset(make_xmp({"WhiteBalance": "Custom", "IncrementalTemperature": "0",
+                                    "IncrementalTint": "0", **settings}))
+    np.testing.assert_allclose(render(preset, np.array([[0.46] * 3]))[0], expected, atol=0.03)
 
 
 def test_exposure_keeps_white_and_rolls_off_highlights_like_lightroom():

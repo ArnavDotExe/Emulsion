@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from colorlab import colorspace as cs
 from colorlab import pipeline, response
 from colorlab.bake import BAKE_PREFIX, write_bake_kit
 from colorlab.calibration import (
@@ -46,9 +47,17 @@ def test_every_strength_is_exercised_and_has_bounds():
         assert 0 <= lo < getattr(pipeline, k) <= hi, k
 
 
-def test_tone_shapes_are_measured_not_fitted_strengths():
-    for k in ("K_CONTRAST", "K_WHITES", "K_BLACKS", "K_PARAMETRIC"):
+def test_tone_and_white_balance_shapes_are_measured_not_fitted_strengths():
+    for k in ("K_CONTRAST", "K_WHITES", "K_BLACKS", "K_PARAMETRIC", "K_TEMPERATURE", "K_TINT"):
         assert k not in K_BOUNDS and not hasattr(pipeline, k)
+
+
+@pytest.mark.parametrize("key,partner", [("IncrementalTemperature", "IncrementalTint"),
+                                         ("IncrementalTint", "IncrementalTemperature")])
+def test_white_balance_is_baked_at_several_amounts_with_its_partner_at_zero(key, partner):
+    found = {float(v.settings[key]) for v in VARIANTS
+             if key in v.settings and v.settings.get(partner) == "0" and v.settings[key] != "0"}
+    assert found == {-100, -50, -25, 25, 50, 100}
 
 
 @pytest.mark.parametrize("key,amounts", [
@@ -150,8 +159,8 @@ def test_fit_restores_the_pipeline_strengths(tmp_path):
 
 def test_fit_reports_missing_bakes_and_scores_unfitted_variants(tmp_path):
     exposure = [v for v in VARIANTS if "Exposure2012" in v.settings]
-    report = fit(fake_lightroom(tmp_path, exposure), variants=exposure + variants_fitting("K_TINT"), grid_size=9)
-    assert set(report.missing) == {v.name for v in variants_fitting("K_TINT")}
+    report = fit(fake_lightroom(tmp_path, exposure), variants=exposure + variants_fitting("K_HUE"), grid_size=9)
+    assert set(report.missing) == {v.name for v in variants_fitting("K_HUE")}
     assert report.constants == {}
     assert all(report.after[v.name] < 0.05 for v in exposure)
 
@@ -243,6 +252,26 @@ def test_measure_response_recovers_the_exposure_shoulder(tmp_path):
                                lambda v: (lambda x: truth.apply(x, float(v.settings["Exposure2012"]))))
     got = measure_response(luts).response.exposure
     assert got.shoulder == pytest.approx(2.5, abs=0.15) and got.strength == pytest.approx(0.8, abs=0.02)
+
+
+def test_measure_response_recovers_white_balance_stops_per_channel(tmp_path):
+    shoulder = response.load().exposure
+    truth = {"IncrementalTemperature": lambda a: np.array([0.016, 0.013, 0.0]) * a,
+             "IncrementalTint": lambda a: np.array([0.005, 0.0, 0.01]) * a}
+    wb = [v for v in VARIANTS if any(k.startswith("Incremental") and v.settings[k] != "0" for k in v.settings)]
+
+    def curve_for(v):  # per-channel stops in the working space, as Lightroom does; bakes are sRGB
+        key = next(k for k in truth if v.settings[k] != "0")
+        evs = np.abs(truth[key](float(v.settings[key])))
+        to_w = lambda x: cs.encode(cs.convert(cs.decode(x, cs.Transfer.SRGB), cs.SRGB, pipeline.WORKING),
+                                   cs.Transfer.SRGB)
+        from_w = lambda e: cs.encode(cs.convert(cs.decode(e, cs.Transfer.SRGB), pipeline.WORKING, cs.SRGB),
+                                     cs.Transfer.SRGB)
+        return lambda x: np.clip(from_w(shoulder.apply(np.clip(to_w(x), 0, 1), evs)), 0, 1)
+
+    got = measure_response(write_neutral_bakes(tmp_path / "luts", wb, curve_for)).response.white_balance
+    np.testing.assert_allclose(got.temperature[50.0], [0.8, 0.65, 0.0], atol=0.03)
+    np.testing.assert_allclose(got.tint[-100.0], [0.5, 0.0, 1.0], atol=0.03)
 
 
 def test_measure_response_recovers_vibrance(tmp_path, monkeypatch):
