@@ -43,6 +43,25 @@ the preset reader. Still open: the reference pipeline (task 6), checks against L
 | 11 | Mobile `.dng` presets: XMP read from IFD0 tag 700 (both byte orders); non-TIFF and missing-tag errors | `test_read_dng_xmp_*`, `test_load_preset_*` | unit |
 | 12 | A local private preset corpus loads and its table-based looks resolve; Adobe built-in looks are reported as unresolved; DNG presets match their XMP twins | `tests/private/` (gitignored, local only) | integration |
 
+## Addendum: Lightroom bake kit (`colorlab.bake`)
+
+Journey: *As a photographer with Lightroom, I want each preset's exact global color as
+a LUT, so that FilmSim matches Lightroom without reverse-engineering its math.*
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_bake.py` | `ModuleNotFoundError: No module named 'colorlab.bake'` |
+| GREEN | `pytest --cov` | **166 passed, 97.04% coverage** |
+| Real run | `python -m colorlab.bake kit presets/private out/bake-kit` | 44 bake presets + 44 Hald TIFFs (67 MB); every bake copy re-parses with grain 0 |
+
+Guarantees (`tests/test_bake.py`):
+- Bake copies zero all spatial sliders, reset crop/perspective/orientation, and keep color settings, curves and looks.
+- Bake copies get a new name, group and UUID. Sidecar-style XMPs are made importable (`PresetType=Normal`, `HasSettings=True`).
+- Hald TIFFs round-trip to identity within 1/65535 and carry the bake settings as XMP (tag 700).
+- 8-bit and RGBA exports are accepted; float or wrong-shape exports are rejected.
+- The kit refuses a non-empty output folder and de-duplicates names.
+- `collect` converts matching exports, reports missing ones, and rejects a level mismatch. The command-line tool returns 0 and prints a summary.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

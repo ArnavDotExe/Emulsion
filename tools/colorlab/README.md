@@ -11,7 +11,20 @@ reference the Android GPU engine has to match.
 | `lut` | `Lut3D` (indexed `[r, g, b]`), tetrahedral and trilinear lookup, `.cube` read/write, Hald CLUT images |
 | `adobe_table` | Decode and encode Lightroom `crs:Table_*` RGBTables (base-85, zlib, identity deltas); apply one with amount and gamut handling |
 | `preset` | Parse `.xmp` and mobile `.dng` presets into a typed `Preset` (settings, point curves, looks); resolve stubbed looks to their profile presets |
+| `bake` | Turn presets into exact LUTs through Lightroom: a kit of bake presets (spatial and geometry settings zeroed) plus same-named 16-bit Hald TIFFs, then `.cube` LUTs from the exports |
 | `errors` | `ColorlabError` and its subclasses; every message names the file or setting |
+
+## Baking presets into LUTs with Lightroom
+
+```bash
+python -m colorlab.bake kit presets/private out/bake-kit        # then follow out/bake-kit/README.txt
+python -m colorlab.bake collect <exports> out/bake-kit looks/private/lightroom
+```
+
+The LUTs capture a preset's global color: white balance, exposure, tone curves, HSL,
+color grading, profiles and looks, saturation. Grain, vignette, sharpening, noise reduction
+and local tone (highlights/shadows, clarity, texture, dehaze) are zeroed for the bake,
+because they'd smear the Hald image. The FilmSim engine applies those itself.
 
 ## Quick look
 

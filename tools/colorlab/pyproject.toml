@@ -12,6 +12,7 @@ license = { text = "GPL-3.0-or-later" }
 dependencies = [
     "numpy>=1.26",
     "defusedxml>=0.7",
+    "tifffile>=2024.1",
 ]
 
 [project.optional-dependencies]
