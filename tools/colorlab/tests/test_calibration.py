@@ -1,13 +1,24 @@
+import dataclasses
 import json
 import re
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from colorlab import pipeline
+from colorlab import pipeline, response
 from colorlab.bake import BAKE_PREFIX, write_bake_kit
-from colorlab.calibration import CAL_GROUP, K_BOUNDS, VARIANTS, fit, main, variant_xmp, write_calibration_presets
-from colorlab.lut import write_cube
+from colorlab.calibration import (
+    CAL_GROUP,
+    K_BOUNDS,
+    VARIANTS,
+    fit,
+    main,
+    measure_response,
+    variant_xmp,
+    write_calibration_presets,
+)
+from colorlab.lut import Lut3D, write_cube
 from colorlab.pipeline import BANDS, render_lut
 from colorlab.preset import parse_preset
 
@@ -35,9 +46,21 @@ def test_every_strength_is_exercised_and_has_bounds():
         assert 0 <= lo < getattr(pipeline, k) <= hi, k
 
 
-def test_monotonic_strength_bounds_keep_tone_curves_from_folding():
-    assert K_BOUNDS["K_WHITES"][1] < 1 and K_BOUNDS["K_BLACKS"][1] < 1
-    assert K_BOUNDS["K_PARAMETRIC"][1] < 0.375 / 3.1416  # narrowest default bump width / pi
+def test_tone_shapes_are_measured_not_fitted_strengths():
+    for k in ("K_CONTRAST", "K_WHITES", "K_BLACKS", "K_PARAMETRIC"):
+        assert k not in K_BOUNDS and not hasattr(pipeline, k)
+
+
+@pytest.mark.parametrize("key,amounts", [
+    ("Exposure2012", {-2, -1, -0.5, 0.5, 1, 2}),
+    ("Contrast2012", {-100, -50, -25, 25, 50, 100}),
+    ("Whites2012", {-100, -50, -25, 25, 50, 100}),
+    ("Blacks2012", {-100, -50, -25, 25, 50, 100}),
+    ("ParametricDarks", {-100, -50, 50, 100}),
+    ("Vibrance", {-100, -50, -25, 25, 50, 100}),
+])
+def test_measured_sliders_are_baked_at_several_amounts(key, amounts):
+    assert {float(v.settings[key]) for v in VARIANTS if set(v.settings) == {key}} == amounts
 
 
 def test_variants_cover_each_slider_family():
@@ -109,19 +132,19 @@ def fake_lightroom(tmp_path, variants, **true_strengths):
 
 
 def test_fit_recovers_known_strengths(tmp_path):
-    variants = variants_fitting("K_CONTRAST") + variants_fitting("K_BLACKS")
-    luts = fake_lightroom(tmp_path, variants, K_CONTRAST=0.9, K_BLACKS=0.3)
+    variants = variants_fitting("K_GRADE_LUM") + variants_fitting("K_MIXER")
+    luts = fake_lightroom(tmp_path, variants, K_GRADE_LUM=0.2, K_MIXER=1.2)
     report = fit(luts, variants=variants, grid_size=9)
-    assert report.constants["K_CONTRAST"] == pytest.approx(0.9, rel=0.02)
-    assert report.constants["K_BLACKS"] == pytest.approx(0.3, rel=0.02)
+    assert report.constants["K_GRADE_LUM"] == pytest.approx(0.2, rel=0.02)
+    assert report.constants["K_MIXER"] == pytest.approx(1.2, rel=0.02)
     for v in variants:
         assert report.after[v.name] < 0.05 <= report.before[v.name]
 
 
 def test_fit_restores_the_pipeline_strengths(tmp_path):
-    variants = variants_fitting("K_WHITES")
+    variants = variants_fitting("K_GRADE_LUM")
     before = {k: getattr(pipeline, k) for k in K_BOUNDS}
-    fit(fake_lightroom(tmp_path, variants, K_WHITES=0.2), variants=variants, grid_size=9)
+    fit(fake_lightroom(tmp_path, variants, K_GRADE_LUM=0.3), variants=variants, grid_size=9)
     assert {k: getattr(pipeline, k) for k in K_BOUNDS} == before
 
 
@@ -139,13 +162,13 @@ def test_cli_presets_and_fit(tmp_path, capsys):
     assert main(["presets", str(tmp_path / "cal")]) == 0
     assert f"wrote {len(VARIANTS)} calibration preset" in capsys.readouterr().out
     (tmp_path / "luts").mkdir()
-    luts = fake_lightroom(tmp_path / "luts", variants_fitting("K_CONTRAST"), K_CONTRAST=0.8)
+    luts = fake_lightroom(tmp_path / "luts", variants_fitting("K_GRADE_LUM"), K_GRADE_LUM=0.25)
     out_json = tmp_path / "fit.json"
     assert main(["fit", str(luts), "--grid", "9", "--json", str(out_json)]) == 0
     text = capsys.readouterr().out
-    assert "K_CONTRAST = 0.8" in text and f"missing {len(VARIANTS) - len(variants_fitting('K_CONTRAST'))}" in text
+    assert "K_GRADE_LUM = 0.25" in text and f"missing {len(VARIANTS) - len(variants_fitting('K_GRADE_LUM'))}" in text
     data = json.loads(out_json.read_text(encoding="utf-8"))
-    assert data["constants"]["K_CONTRAST"] == pytest.approx(0.8, rel=0.02)
+    assert data["constants"]["K_GRADE_LUM"] == pytest.approx(0.25, rel=0.02)
 
 
 def test_cli_fit_without_any_bakes_fails(tmp_path, capsys):
@@ -183,3 +206,75 @@ def test_cli_presets_only_missing_writes_just_the_unbaked_variants(tmp_path, cap
     written = sorted(p.stem for p in out.glob("*.xmp"))
     assert written == sorted(v.name for v in VARIANTS if v not in done)
     assert f"wrote {len(written)} calibration preset" in capsys.readouterr().out
+
+
+# --- measured responses ----------------------------------------------------------------------------
+
+def solo(key):
+    return [v for v in VARIANTS if set(v.settings) == {key}]
+
+
+def write_neutral_bakes(lut_dir, variants, curve_for):
+    """'Bakes' that apply one per-channel curve (a function of the variant) to every color."""
+    lut_dir.mkdir(exist_ok=True)
+    ident = Lut3D.identity(17).table.astype(np.float64)
+    for v in variants:
+        write_cube(Lut3D(curve_for(v)(ident)), lut_dir / f"{v.name}.cube")
+    return lut_dir
+
+
+def test_measure_response_reads_tone_curves_from_neutral_ramps(tmp_path):
+    whites = solo("Whites2012")
+    luts = write_neutral_bakes(tmp_path / "luts", whites,
+                               lambda v: (lambda x: x ** (1 - float(v.settings["Whites2012"]) / 400)))
+    report = measure_response(luts)
+    fam = report.response.tone["Whites2012"]
+    assert set(fam.curves) == {float(v.settings["Whites2012"]) for v in whites}
+    np.testing.assert_allclose(fam.curves[100.0], response.X ** 0.75, atol=2e-3)
+    assert "Whites2012" in report.measured
+    assert "Blacks2012" in report.kept  # no bakes: the shipped curves stay
+    np.testing.assert_allclose(report.response.tone["Blacks2012"].curves[100.0],
+                               response.load().tone["Blacks2012"].curves[100.0])
+
+
+def test_measure_response_recovers_the_exposure_shoulder(tmp_path):
+    truth = response.ExposureShoulder(shoulder=2.5, strength=0.8)
+    luts = write_neutral_bakes(tmp_path / "luts", solo("Exposure2012"),
+                               lambda v: (lambda x: truth.apply(x, float(v.settings["Exposure2012"]))))
+    got = measure_response(luts).response.exposure
+    assert got.shoulder == pytest.approx(2.5, abs=0.15) and got.strength == pytest.approx(0.8, abs=0.02)
+
+
+def test_measure_response_recovers_vibrance(tmp_path, monkeypatch):
+    shipped = response.load()
+    amounts = (-100.0, -50.0, 50.0, 100.0)
+    truth = response.VibranceResponse(
+        chroma=shipped.vibrance.chroma, pivots=(0.5, 0.7),
+        gains={a: np.full(len(shipped.vibrance.chroma), 1 + a / 250) for a in amounts},
+        bands={a: np.ones(8) for a in amounts},
+    )
+    monkeypatch.setattr(pipeline, "RESPONSE", dataclasses.replace(shipped, vibrance=truth))
+    luts = tmp_path / "luts"
+    luts.mkdir()
+    for v in solo("Vibrance"):
+        if abs(float(v.settings["Vibrance"])) in (50, 100):
+            write_cube(render_lut(parse_preset(variant_xmp(v)), size=17), luts / f"{v.name}.cube")
+    monkeypatch.setattr(pipeline, "RESPONSE", shipped)
+    got = measure_response(luts).response.vibrance
+    assert got.pivots == pytest.approx((0.5, 0.7), abs=0.051)
+    np.testing.assert_allclose(got.gains[100.0][1:6], 1.4, atol=0.08)
+    np.testing.assert_allclose(got.gains[-50.0][1:6], 0.8, atol=0.08)
+
+
+def test_cli_response_writes_a_loadable_file(tmp_path, capsys):
+    luts = write_neutral_bakes(tmp_path / "luts", solo("Contrast2012"), lambda v: (lambda x: x))
+    out = tmp_path / "resp.json"
+    assert main(["response", str(luts), "--out", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "measured: Contrast2012" in text and "kept" in text
+    np.testing.assert_allclose(response.load(out).tone["Contrast2012"].curve(100), response.X, atol=2e-3)
+
+
+def test_cli_response_without_any_bakes_fails(tmp_path, capsys):
+    assert main(["response", str(tmp_path), "--out", str(tmp_path / "r.json")]) == 1
+    assert "no calibration bakes" in capsys.readouterr().err
