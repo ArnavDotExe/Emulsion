@@ -135,8 +135,8 @@ Guarantees:
   The command-line tool writes presets, prints fitted constants and JSON, and fails cleanly with no bakes.
 - `bake`: kit TIFFs embed a Lightroom-sidecar-style XMP (`crs:AlreadyApplied="False"`, metadata dates,
   a distinct document ID each). Existing values are replaced, not duplicated. A missing process version
-  becomes 11.0. That Lightroom then auto-applies the settings is a **hypothesis** and still has to be
-  confirmed in Lightroom.
+  becomes 11.0. **Confirmed in Lightroom (2026-11-15):** it auto-applies the embedded settings
+  on import. The 30-preset redo kit came back with all 30 bakes changed and none unchanged.
 
 ## Measured slider shapes (`colorlab.response`)
 
@@ -173,10 +173,16 @@ Guarantees:
 - The kit now bakes exposure at ±0.5/±1/±2, Contrast/Whites/Blacks and Vibrance at ±25/±50/±100,
   and every parametric region at ±50/±100.
 
-Known gaps: Contrast, Whites, Blacks and Vibrance at ±25, the parametric regions at ±50, and exposure
-at ±0.5 and ±2 aren't baked yet. Until they are, those amounts are interpolated (exposure extrapolates
-via the shoulder model). The remaining tone error (Whites +100 4.2, Parametric Lights +100 3.5) is
-Lightroom not acting purely per channel at the extremes.
+Re-bake with the 30 missing variants (`out/cal-redo3-kit`, all 143 bakes now present):
+- `calibration response` measures the ±25/±50 tables, and exposure at ±0.5/±1/±2 gives a shoulder
+  of 5.55 and strength 0.875.
+- The channel curves now match within 0.01 ΔE.
+- 44 presets: median **3.39**, mean **4.51**.
+- Temperature/tint were fitted for the first time (K 0.00472 / 0.0025). They're still 12–26 ΔE at
+  ±50/±100, so the white-balance *model* is wrong, not just its strength. That's the next shape to fix.
+
+Known gaps: the remaining tone error (Whites +100 4.2, Parametric Lights +100 3.5) is Lightroom not
+acting purely per channel at the extremes. Exposure +2 is still 4.9.
 
 ## Coverage and known gaps
 

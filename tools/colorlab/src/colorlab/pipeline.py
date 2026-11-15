@@ -38,9 +38,10 @@ _LUMA = WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
 RESPONSE: response.Response = response.load()
 
 # Stage strengths (slider value 100 == full strength), fitted with `colorlab.calibration`
-# to single-slider Lightroom bakes (2026-11-15, 113 bakes). Temperature/tint are not fitted yet.
-K_TEMPERATURE = 0.004  # log-gain per incremental temperature unit (first guess)
-K_TINT = 0.003  # first guess
+# to single-slider Lightroom bakes (2026-11-15, 143 bakes). The temperature/tint *shape* is still
+# wrong (12-26 dE at +-50/+-100), so these two are the best strengths for a model that needs redoing.
+K_TEMPERATURE = 0.00472  # log-gain per incremental temperature unit
+K_TINT = 0.0025
 K_HUE = 0.831  # fraction of the gap to the neighbouring band at hue 100
 K_LUMINANCE = 0.708
 K_GRADE_SAT = 0.231
