@@ -94,28 +94,53 @@ def test_apply_curves_master_hits_every_channel_and_rgb_curves_one_each():
     np.testing.assert_allclose(apply_curves(x, blue=lift), [[0, 0, 40 / 255]], atol=1e-12)
 
 
-# --- white balance and exposure (linear) ------------------------------------------------------
+# --- white balance and exposure (encoded, measured shapes) ---------------------------------------
 
 def test_white_balance_defaults_are_identity():
     np.testing.assert_array_equal(white_balance(GRAYS, 0, 0), GRAYS)
 
 
-def test_temperature_warms_and_tint_adds_magenta_while_keeping_brightness():
-    gray = np.array([0.18, 0.18, 0.18])
-    warm = white_balance(gray, temperature=50, tint=0)
-    assert warm[0] > gray[0] and warm[2] < gray[2]
-    cool = white_balance(gray, temperature=-50, tint=0)
-    assert cool[0] < gray[0] and cool[2] > gray[2]
-    magenta = white_balance(gray, temperature=0, tint=50)
-    assert magenta[1] < gray[1] and magenta[0] > gray[0]
-    y = cs.PROPHOTO_RGB.rgb_to_xyz[1]  # working-space luminance
-    for out in (warm, cool, magenta):
-        assert out @ y == pytest.approx(gray @ y, rel=1e-9)
+def test_white_balance_keeps_black_and_white_and_each_channel_monotonic():
+    # Lightroom on a rendered image: white stays white; each channel is brightened on its own curve.
+    for t, m in ((100, 0), (-100, 0), (0, 100), (0, -100), (40, -30)):
+        out = white_balance(GRAYS, temperature=t, tint=m)
+        np.testing.assert_allclose(out[0], 0, atol=1e-12)
+        np.testing.assert_allclose(out[-1], 1, atol=1e-12)
+        assert all(is_monotonic(out[:, c]) for c in range(3))
 
 
-def test_exposure_scales_linear_light_by_powers_of_two():
-    np.testing.assert_allclose(exposure(GRAYS, 1.0), GRAYS * 2)
-    np.testing.assert_allclose(exposure(GRAYS, -2.0), GRAYS / 4)
+def test_temperature_warms_and_tint_adds_magenta_by_brightening_the_other_channels():
+    gray = np.array([0.46, 0.46, 0.46])
+    warm = white_balance(gray, temperature=50)
+    assert warm[0] > warm[1] > gray[1] and warm[2] == pytest.approx(gray[2], abs=0.01)  # blue kept
+    cool = white_balance(gray, temperature=-50)
+    assert cool[2] > cool[1] > cool[0] >= gray[0]
+    magenta = white_balance(gray, tint=50)
+    assert magenta[2] > magenta[0] > gray[0] and magenta[1] == pytest.approx(gray[1], abs=0.01)  # green kept
+
+
+@pytest.mark.parametrize("settings,expected", [
+    # Lightroom bakes of gray 0.46 (sRGB in and out)
+    ({"IncrementalTemperature": "+50"}, (0.748, 0.624, 0.427)),
+    ({"IncrementalTemperature": "-50"}, (0.334, 0.527, 0.793)),
+    ({"IncrementalTint": "+100"}, (0.580, 0.431, 0.811)),
+    ({"IncrementalTint": "-100"}, (0.323, 0.737, 0.419)),
+])
+def test_render_white_balance_matches_lightroom_on_gray(settings, expected):
+    preset = parse_preset(make_xmp({"WhiteBalance": "Custom", "IncrementalTemperature": "0",
+                                    "IncrementalTint": "0", **settings}))
+    np.testing.assert_allclose(render(preset, np.array([[0.46] * 3]))[0], expected, atol=0.03)
+
+
+def test_exposure_keeps_white_and_rolls_off_highlights_like_lightroom():
+    # Lightroom never clips with exposure: white stays white and highlights roll off.
+    for ev in (-1.0, 1.0, 3.0):
+        y = exposure(GRAYS, ev)[:, 0]
+        assert y[0] == pytest.approx(0) and y[-1] == pytest.approx(1) and is_monotonic(y)
+        assert np.all(y[:-1] < 1)
+    gray = np.array([0.18] * 3)  # encoded values; Lightroom bakes: +1 -> 0.299, -1 -> 0.102
+    assert exposure(gray, 1.0)[0] == pytest.approx(0.299, abs=0.02)
+    assert exposure(gray, -1.0)[0] == pytest.approx(0.102, abs=0.02)
     np.testing.assert_array_equal(exposure(GRAYS, 0.0), GRAYS)
 
 
@@ -165,6 +190,22 @@ def test_blacks_work_low_and_whites_work_high():
     assert tone(dark, blacks=-60)[0] < 0.1 and tone(light, whites=-60)[0] < 0.9
 
 
+def test_whites_and_blacks_move_the_clip_points_like_lightroom():
+    whites = tone(GRAYS, whites=100)[:, 0]
+    assert np.all(whites[RAMP >= 0.8] > 1 - 1e-3)  # Lightroom: white from x ~ 0.75
+    crushed = tone(GRAYS, blacks=-100)[:, 0]
+    assert np.all(crushed[RAMP <= 0.25] < 1e-3)  # Lightroom: black up to x ~ 0.3
+    soft = tone(GRAYS, whites=-100)[:, 0]
+    assert soft[-1] == pytest.approx(1) and np.interp(0.85, RAMP, soft) < 0.8  # Lightroom: 0.754
+
+
+def test_blacks_between_baked_amounts_crush_a_range_in_between():
+    def last_black(v):
+        y = tone(GRAYS, blacks=v)[:, 0]
+        return RAMP[np.flatnonzero(y < 1e-3).max()]
+    assert last_black(-50) < last_black(-75) < last_black(-100)
+
+
 # --- parametric curve -----------------------------------------------------------------------------
 
 def test_parametric_curve_defaults_are_identity():
@@ -176,7 +217,20 @@ def test_each_parametric_region_mostly_moves_its_own_tones(region, center):
     y = parametric_curve(GRAYS, **{region: 100})[:, 0] - RAMP
     peak = RAMP[np.argmax(y)]
     assert abs(peak - center) < 0.15
-    assert y.min() > -1e-12
+    assert y.min() > -2e-3  # measured curves carry bake noise of a few thousandths
+
+
+def test_parametric_regions_are_as_strong_as_lightrooms():
+    # Lightroom bakes: Darks +100 lifts 0.35 to 0.56; Lights -100 drops 0.55 to 0.35.
+    assert np.interp(0.35, RAMP, parametric_curve(GRAYS, darks=100)[:, 0]) > 0.35 + 0.15
+    assert np.interp(0.55, RAMP, parametric_curve(GRAYS, lights=-100)[:, 0]) < 0.55 - 0.15
+
+
+def test_parametric_splits_move_the_regions():
+    low = parametric_curve(GRAYS, darks=100, splits=(10, 30, 75))[:, 0] - RAMP
+    high = parametric_curve(GRAYS, darks=100, splits=(40, 60, 85))[:, 0] - RAMP
+    assert RAMP[np.argmax(low)] < RAMP[np.argmax(high)]
+    assert is_monotonic(low + RAMP) and is_monotonic(high + RAMP)
 
 
 @pytest.mark.parametrize("value", [-100, 100])
@@ -269,6 +323,33 @@ def test_vibrance_boosts_muted_colors_relatively_more():
     assert muted_gain > vivid_gain > 1.0
 
 
+def test_vibrance_plus_100_boosts_muted_colors_but_barely_moves_vivid_ones():
+    # Lightroom bakes: chroma gain ~1.9 at chroma 0.1, ~1.05 at chroma 0.6 and above.
+    muted_green = np.array([0.45, 0.55, 0.47])
+    assert chroma(saturation_vibrance(muted_green, vibrance=100)) / chroma(muted_green) > 1.5
+    assert chroma(saturation_vibrance(RED, vibrance=100)) / chroma(RED) < 1.2
+
+
+def test_vibrance_protects_skin_tones():
+    # Lightroom bakes: muted reds and oranges get a smaller boost than other hues.
+    skin, muted_green = MUTED, np.array([0.45, 0.55, 0.47])
+    skin_gain = chroma(saturation_vibrance(skin, vibrance=100)) / chroma(skin)
+    assert 1.0 < skin_gain < chroma(saturation_vibrance(muted_green, vibrance=100)) / chroma(muted_green)
+
+
+def test_vibrance_minus_100_keeps_some_color():
+    # Lightroom bakes: about a third of a vivid color's chroma survives.
+    kept = chroma(saturation_vibrance(RED, vibrance=-100)) / chroma(RED)
+    assert 0.2 < kept < 0.5
+
+
+def test_vibrance_keeps_hue_and_pivots_toward_the_channel_midrange():
+    from colorlab.pipeline import _LUMA, _hue
+    out = saturation_vibrance(BLUE, vibrance=-100)
+    assert _hue(out)[0] == pytest.approx(_hue(BLUE)[0], abs=1e-6)
+    assert out @ _LUMA > BLUE @ _LUMA  # Lightroom brightens blues as vibrance drains them
+
+
 def test_saturation_and_vibrance_leave_neutrals():
     np.testing.assert_allclose(saturation_vibrance(GRAYS, saturation=80, vibrance=80), GRAYS, atol=1e-12)
 
@@ -297,10 +378,11 @@ def test_render_keeps_image_shape():
     assert render(parse_preset(make_xmp({"Exposure2012": "+0.5"})), img).shape == (4, 5, 3)
 
 
-def test_render_exposure_doubles_linear_gray():
-    gray = cs.encode(np.array([[0.2, 0.2, 0.2]]), cs.Transfer.SRGB)
+def test_render_exposure_applies_the_exposure_stage_to_grays():
+    gray = np.array([[0.4, 0.4, 0.4]])  # neutral sRGB == neutral working-space encoded value
     out = render(parse_preset(make_xmp({"Exposure2012": "+1.00"})), gray)
-    np.testing.assert_allclose(cs.decode(out.astype(np.float64), cs.Transfer.SRGB), [[0.4] * 3], atol=1e-5)
+    np.testing.assert_allclose(out, exposure(gray, 1.0), atol=1e-5)
+    assert out[0, 0] > 0.5
 
 
 def test_render_applies_point_curve_in_the_encoded_domain():
@@ -329,9 +411,8 @@ def test_render_applies_the_look_table_with_its_amount():
 
 def test_render_applies_the_look_profiles_own_settings():
     preset = inverting_look(1.0, {"Exposure2012": "+1.00"})
-    gray = cs.encode(np.array([[0.2, 0.2, 0.2]]), cs.Transfer.SRGB)
-    lin = cs.decode(1.0 - render(preset, gray).astype(np.float64), cs.Transfer.SRGB)
-    np.testing.assert_allclose(lin, [[0.4] * 3], atol=1e-4)
+    gray = np.array([[0.4, 0.4, 0.4]])
+    np.testing.assert_allclose(1.0 - render(preset, gray), exposure(gray, 1.0), atol=1e-4)
 
 
 def test_render_rejects_non_rgb_input():

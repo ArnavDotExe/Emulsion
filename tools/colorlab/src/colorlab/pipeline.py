@@ -2,12 +2,13 @@
 
 Lightroom's exact formulas are not public. Every stage here is a plain, documented
 model with the properties a photographer expects: identity at default, endpoints
-held, tone curves monotonic, neutrals kept neutral. The ``K_*`` strengths are
-tuned against Lightroom bakes of real presets (see ``docs/tdd``).
+held, tone curves monotonic. White balance, exposure, the tone sliders, the
+parametric curve and vibrance take their shapes from measured Lightroom responses
+(``colorlab.response``); the ``K_*`` strengths of the other stages are fitted to
+single-slider Lightroom bakes (``colorlab.calibration``).
 
-Working space is ProPhoto RGB primaries. White balance and exposure run on linear
-light. Every later stage runs on sRGB-curve encoded values, the space Lightroom's
-tone curve panel shows. Spatial effects (grain, vignette, highlights/shadows,
+Working space is ProPhoto RGB primaries. Every stage runs on sRGB-curve encoded
+values, the space Lightroom's tone curve panel shows. Spatial effects (grain, vignette, highlights/shadows,
 clarity, texture, dehaze, sharpening, noise reduction) belong to a later stage and
 are not applied here.
 """
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import colorspace as cs
+from . import response
 from .adobe_table import apply_rgb_table
 from .errors import ParameterError
 from .lut import Lut3D
@@ -31,21 +33,16 @@ BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"
 _BAND_CENTERS = np.array([0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0, 360.0])
 _LUMA = WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
 
+#: measured shapes of white balance, exposure, the tone sliders, the parametric curve and vibrance
+RESPONSE: response.Response = response.load()
+
 # Stage strengths (slider value 100 == full strength), fitted with `colorlab.calibration`
-# to single-slider Lightroom bakes (2026-11-15, 113 bakes). Temperature/tint are not fitted yet.
-K_TEMPERATURE = 0.004  # log-gain per incremental temperature unit (first guess)
-K_TINT = 0.003  # first guess
-K_CONTRAST = 0.654  # log2 of the power applied at contrast 100
-K_WHITES = 0.892
-K_BLACKS = 0.908
-K_PARAMETRIC = 0.115  # peak lift of one parametric region at 100 (at its monotonic bound)
+# to single-slider Lightroom bakes (2026-11-15, 143 bakes).
 K_HUE = 0.831  # fraction of the gap to the neighbouring band at hue 100
 K_LUMINANCE = 0.708
 K_GRADE_SAT = 0.231
 K_GRADE_LUM = 0.0868
 K_MIXER = 1.55
-
-CONTRAST_PIVOT = float(cs.encode(np.array(0.18), WORKING_TRANSFER))
 
 Curve = Sequence[tuple[float, float]]
 
@@ -141,45 +138,37 @@ def apply_curves(rgb: np.ndarray, master: Curve = IDENTITY_CURVE, red: Curve = I
     return out
 
 
-# --- linear stages -------------------------------------------------------------------------------
+# --- white balance, exposure and tone (encoded, measured shapes) -----------------------------
 
-def white_balance(lin: np.ndarray, temperature: float = 0.0, tint: float = 0.0) -> np.ndarray:
-    """Incremental temperature/tint (-100..100) as channel gains that keep luminance."""
+def white_balance(enc: np.ndarray, temperature: float = 0.0, tint: float = 0.0) -> np.ndarray:
+    """Incremental temperature/tint (-100..100): Lightroom's measured stops per channel on the
+    exposure shoulder, so black and white stay put."""
     _check("temperature", temperature, -100, 100)
     _check("tint", tint, -100, 100)
-    lin = _as_rgb(lin)
+    enc = _as_rgb(enc)
     if temperature == 0 and tint == 0:
-        return lin
-    t, m = K_TEMPERATURE * temperature, K_TINT * tint
-    gains = np.exp(np.array([t + m, -m, -t + m]))
-    gains /= gains @ WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
-    return lin * gains
+        return enc
+    return RESPONSE.exposure.apply(enc, RESPONSE.white_balance.evs(temperature, tint))
 
 
-def exposure(lin: np.ndarray, ev: float) -> np.ndarray:
-    """Exposure in stops (-5..5) on linear light."""
+
+def exposure(enc: np.ndarray, ev: float) -> np.ndarray:
+    """Exposure in stops (-5..5): Lightroom's shoulder, which keeps white and never clips."""
     _check("exposure", ev, -5, 5)
-    lin = _as_rgb(lin)
-    return lin if ev == 0 else lin * 2.0 ** ev
+    enc = _as_rgb(enc)
+    return enc if ev == 0 else RESPONSE.exposure.apply(enc, ev)
 
-
-# --- tone ----------------------------------------------------------------------------------------------
 
 def tone(enc: np.ndarray, contrast: float = 0.0, whites: float = 0.0, blacks: float = 0.0) -> np.ndarray:
-    """Contrast, Whites and Blacks (-100..100) as monotonic per-channel curves with fixed ends."""
+    """Contrast, Whites and Blacks (-100..100): Lightroom's measured per-channel curves, in that order."""
     for name, v in (("contrast", contrast), ("whites", whites), ("blacks", blacks)):
         _check(name, v, -100, 100)
     enc = _as_rgb(enc)
     if contrast == 0 and whites == 0 and blacks == 0:
         return enc
     e = np.clip(enc, 0.0, 1.0)
-    if contrast:
-        g, p = 2.0 ** (K_CONTRAST * contrast / 100), CONTRAST_PIVOT
-        e = np.where(e <= p, p * (e / p) ** g, 1 - (1 - p) * ((1 - e) / (1 - p)) ** g)
-    if whites:
-        e = e + K_WHITES * whites / 100 * e ** 3 * (1 - e)
-    if blacks:
-        e = e + K_BLACKS * blacks / 100 * e * (1 - e) ** 3
+    for key, v in (("Contrast2012", contrast), ("Whites2012", whites), ("Blacks2012", blacks)):
+        e = RESPONSE.tone[key].apply(e, v)
     return e
 
 
@@ -195,16 +184,14 @@ def parametric_curve(enc: np.ndarray, shadows: float = 0.0, darks: float = 0.0, 
     enc = _as_rgb(enc)
     if not any(amounts):
         return enc
-    e = np.clip(enc, 0.0, 1.0)
-    # Each region's bump spans from the middle of the region below to the middle of the one above.
-    mids = (0.0, s1 / 2, (s1 + s2) / 2, (s2 + s3) / 2, (s3 + 1) / 2, 1.0)
-    lift = np.zeros_like(e)
-    for i, amount in enumerate(amounts):
-        if amount:
-            lo, hi = mids[i], mids[i + 2]
-            u = np.clip((e - lo) / (hi - lo), 0.0, 1.0)
-            lift += K_PARAMETRIC * amount / 100 * np.sin(np.pi * u) ** 2
-    return e + lift
+    # Lightroom's measured region curves are for the default splits; other splits stretch the
+    # tonal axis so each region keeps its place, and the regions apply one after another.
+    custom, default = (0.0, s1, s2, s3, 1.0), (0.0, 0.25, 0.5, 0.75, 1.0)
+    e = np.interp(np.clip(enc, 0.0, 1.0), custom, default)
+    for key, amount in zip(("ParametricShadows", "ParametricDarks", "ParametricLights", "ParametricHighlights"),
+                           amounts):
+        e = RESPONSE.tone[key].apply(e, amount)
+    return np.interp(e, default, custom)
 
 
 # --- hue/chroma decomposition ---------------------------------------------------------------------
@@ -319,15 +306,20 @@ def color_grade(enc: np.ndarray, shadows: Zone = Zone(), midtones: Zone = Zone()
 # --- saturation, vibrance, grayscale ----------------------------------------------------------------
 
 def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: float = 0.0) -> np.ndarray:
-    """Global saturation, and vibrance that favours muted colors (-100..100)."""
+    """Vibrance (Lightroom's measured response, favouring muted colors), then global saturation (-100..100)."""
     _check("saturation", saturation, -100, 100)
     _check("vibrance", vibrance, -100, 100)
     enc = _as_rgb(enc)
-    if saturation == 0 and vibrance == 0:
-        return enc
-    h, c = _hue(enc)
-    gain = (1 + saturation / 100) * (1 + vibrance / 100 * (1 - np.clip(c, 0.0, 1.0)))
-    return _recompose(enc, h, c * np.maximum(gain, 0.0))
+    if vibrance:
+        h, c = _hue(enc)
+        vib = RESPONSE.vibrance
+        gain = np.maximum(vib.gain(c, _band_weights(h), vibrance), 0.0)
+        pivot = enc.min(axis=-1) + vib.pivot(vibrance) * c  # a gray between the min and max channel
+        enc = pivot[..., None] + gain[..., None] * (enc - pivot[..., None])
+    if saturation:
+        h, c = _hue(enc)
+        enc = _recompose(enc, h, c * max(1 + saturation / 100, 0.0))
+    return enc
 
 
 def grayscale(enc: np.ndarray, mixer: Mapping[str, float] | None = None) -> np.ndarray:
@@ -476,9 +468,9 @@ def render(preset: Preset, image: np.ndarray, space: cs.RGBSpace = cs.SRGB) -> n
     img = _as_rgb(image)
     s = _sliders(preset)
     lin = cs.convert(cs.decode(np.clip(img, 0.0, 1.0), WORKING_TRANSFER), space, WORKING)
-    lin = white_balance(lin, s.number("IncrementalTemperature"), s.number("IncrementalTint"))
-    lin = exposure(lin, s.number("Exposure2012"))
     enc = cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
+    enc = white_balance(enc, s.number("IncrementalTemperature"), s.number("IncrementalTint"))
+    enc = exposure(enc, s.number("Exposure2012"))
     for name in ORDER:
         enc = ENCODED_STAGES[name](s, enc)
     out = cs.convert(cs.decode(enc, WORKING_TRANSFER), WORKING, space)

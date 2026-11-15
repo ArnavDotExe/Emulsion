@@ -99,6 +99,7 @@ Guarantees (`tests/test_pipeline.py`):
 - Tone, parametric and point curves keep 0 and 1 fixed. Tone and parametric stay monotonic even at ±100.
 - Contrast pivots around middle gray; Blacks work low and Whites high; each parametric region moves its own tones.
 - White balance keeps working-space luminance; +temperature warms; +tint adds magenta.
+  (Superseded: white balance is now measured per-channel stops; see "White balance" below.)
 - HSL, saturation/vibrance and the B&W mixer leave neutrals neutral. Saturation −100 gives gray.
   Vibrance favors muted colors. Each HSL band moves only its own hues.
 - Color grading tints the right zones, and Balance moves the split.
@@ -127,7 +128,7 @@ Guarantees:
 - `metrics`: Lab matches colour-science. CIEDE2000 matches the Sharma reference pairs within 1e-4
   and colour-science within 1e-6, is symmetric, and is zero for equal colors.
 - `calibration`: variant names are unique and file-safe. Every `K_*` strength has search bounds
-  (tone-curve bounds keep curves monotonic) and at least one variant. Every slider family and HSL band
+  and at least one variant (tone shapes are measured instead; see below). Every slider family and HSL band
   is covered. B&W variants set the whole mixer, so Lightroom's auto-mix can't leak in. Variant XMPs are
   complete presets that feed `bake kit` directly.
 - The fitter recovers known strengths from synthetic bakes within 2%, restores the pipeline's
@@ -135,8 +136,91 @@ Guarantees:
   The command-line tool writes presets, prints fitted constants and JSON, and fails cleanly with no bakes.
 - `bake`: kit TIFFs embed a Lightroom-sidecar-style XMP (`crs:AlreadyApplied="False"`, metadata dates,
   a distinct document ID each). Existing values are replaced, not duplicated. A missing process version
-  becomes 11.0. That Lightroom then auto-applies the settings is a **hypothesis** and still has to be
-  confirmed in Lightroom.
+  becomes 11.0. **Confirmed in Lightroom (2026-11-15):** it auto-applies the embedded settings
+  on import. The 30-preset redo kit came back with all 30 bakes changed and none unchanged.
+
+## Measured slider shapes (`colorlab.response`)
+
+Journey: *As a maintainer, I want exposure, Whites/Blacks/Contrast, the parametric curve and
+vibrance to follow Lightroom's own response curves, measured from the single-slider bakes,
+because fitting one strength to a guessed formula left most of the remaining error in those stages.*
+
+What the 113 bakes showed (neutral ramps and colored samples, working-space encoded):
+- These tone sliders act per channel in our working space. Applying Lightroom's own neutral curve
+  per channel reproduces the colored bakes to 1–4 ΔE.
+- Exposure keeps white at 1 and rolls the highlights off. `T(2^(0.9·ev)·T⁻¹(x))` with
+  `T(s) = 1 − (1 + s/3.6)^−3.6` fits the ±1 EV bakes within 0.009.
+- Whites + clips before 1 (from x ≈ 0.75 at +100). Blacks − crushes a whole range (up to x ≈ 0.3 at −100).
+- Vibrance pivots between each color's min and max channel, at 0.6 for − and 0.9 for +. Lightroom's
+  "luma" barely weights ProPhoto blue, so drained blues brighten. The gain falls with chroma, and +
+  protects reds and oranges.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest` | `test_response.py` and `test_calibration.py` cannot import `colorlab.response`. 9 `test_pipeline.py` specs fail on the old shapes (commit 5fa4470) |
+| GREEN | `pytest`, then `pytest --cov` | First run: 3 failures. A curve blended toward identity never clips, so the interpolation now moves the clip points linearly and blends the shape between them. The vibrance spec's "muted" color sat at a skin hue, which Lightroom protects; the spec now uses a muted green and adds an explicit skin-protection test. Clipped colors skewed the vibrance pivot measure, so they're now left out of the gain estimate. Then everything passes, **98% coverage** (commit be16d19) |
+| Real run | `calibration response out/cal-luts --out src/colorlab/data/lightroom_response.json` | All 9 sliders measured: exposure shoulder 3.6, strength 0.9, vibrance pivots 0.6 / 0.9 |
+| Real run | `calibration fit out/cal-luts` | Remaining strengths unchanged. Mean ΔE over 113 bakes 2.90 → **2.29**. For example Whites +100 13.65 → 4.19, Blacks −100 9.56 → 1.11, Parametric Lights −100 10.08 → 2.57, Vibrance −100 7.51 → 4.94 |
+| Real run | 44 private presets | median ΔE 4.22 → **3.40**, mean 4.90 → **4.54** (private threshold tightened to 3.45 / 4.60) |
+
+Guarantees:
+- Tone families are identity at 0, exact at baked amounts, monotonic in between, clamp outside the
+  baked range, and move clip points between amounts. Malformed tables are rejected.
+- The exposure shoulder keeps 0 and 1, never clips, brightens every midtone for +EV, and ±EV steps undo each other.
+- Vibrance gain is 1 at 0, follows the chroma table and band factors, and keeps hue and neutrals.
+- The shipped response has every tone family, round-trips through JSON, and refuses a file missing one.
+- `measure_response` reads tone curves from neutral ramps, recovers a known exposure shoulder and a
+  known vibrance pivot and gain from synthetic bakes, and keeps shipped curves for sliders without bakes.
+- The kit now bakes exposure at ±0.5/±1/±2, Contrast/Whites/Blacks and Vibrance at ±25/±50/±100,
+  and every parametric region at ±50/±100.
+
+Re-bake with the 30 missing variants (`out/cal-redo3-kit`, all 143 bakes now present):
+- `calibration response` measures the ±25/±50 tables, and exposure at ±0.5/±1/±2 gives a shoulder
+  of 5.55 and strength 0.875.
+- The channel curves now match within 0.01 ΔE.
+- 44 presets: median **3.39**, mean **4.51**.
+- Temperature/tint were fitted for the first time (K 0.00472 / 0.0025). They're still 12–26 ΔE at
+  ±50/±100, so the white-balance *model* is wrong, not just its strength. That's the next shape to fix.
+
+Known gaps: the remaining tone error (Whites +100 4.2, Parametric Lights +100 3.5) is Lightroom not
+acting purely per channel at the extremes. Exposure +2 is still 4.9.
+
+### White balance (`WhiteBalanceResponse`)
+
+Journey: *As a maintainer, I want temperature and tint to match Lightroom on rendered images, because
+the luminance-keeping gain model was 12–26 ΔE off at ±50/±100 even with fitted strengths.*
+
+What the bakes showed (neutral ramp, per channel, inverted through the exposure shoulder):
+- Each channel gets a constant number of stops from shadows to highlights. It's a per-channel
+  exposure on the same shoulder, so white stays white.
+- The weakest channel barely moves: blue for warm, green for magenta.
+- The stops grow non-linearly. Temperature +50 is R 1.01 / G 0.84 / B 0.02, while −100 is
+  R 1.44 / G 0.96 / B 3.71.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest --continue-on-collection-errors` | `test_response.py` cannot import `WhiteBalanceResponse`. 10 runtime failures: white doesn't stay white, the Lightroom gray targets are missed, `K_TEMPERATURE`/`K_TINT` still exist, and there are no ±25 variants (commit 0a6e29a) |
+| GREEN | `pytest --cov` | One failure: a channel with 0 stops wasn't bit-identical after the curve round trip, so it now passes through. Then everything passes, **98% coverage** (commit fa9d9a8) |
+| Real run | `calibration response out/cal-luts` | Temperature and tint stops measured at ±50/±100 |
+| Real run | `calibration fit out/cal-luts` | Mean over 143 bakes 2.67 → **2.25**. Temperature −100 25.8 → 13.4, +100 18.6 → 6.3, Tint −100 13.1 → 4.9, the ±50 bakes 1.7–4.4 (were 3.5–12.0) |
+| Real run | 44 private presets | median **3.18**, mean **4.39** (threshold 3.25 / 4.45) |
+
+Guarantees:
+- White balance keeps black and white, and every channel stays monotonic.
+- +temperature warms while keeping blue, and +tint adds magenta while keeping green.
+- Four Lightroom gray targets match within 0.03.
+- Stops are 0 at 0, exact at baked amounts, linear in between, clamped outside, and temperature and
+  tint add.
+- The shoulder takes one EV per channel, and a channel with 0 stops passes through exactly.
+- `measure_response` recovers known per-channel stops from synthetic working-space bakes.
+
+Re-bake of Temperature/Tint ±25 (`out/cal-redo4-kit`, all 147 bakes present):
+- Measured stops: Temperature +25 R 0.57 / G 0.46 / B 0.00, −25 R 0.04 / G 0.14 / B 0.67.
+- Those bakes now score 0.7–2.1 ΔE, and the mean over 147 bakes is **2.22**.
+- The 44 presets are unchanged (median 3.18, mean 4.39); blending between 0 and ±50 was already close.
+
+Known gaps: Temperature −100 (13.4) and ±100 still miss on saturated colors. Lightroom's white balance isn't
+purely per-channel there, and the sRGB output clips.
 
 ## Coverage and known gaps
 
