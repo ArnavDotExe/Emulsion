@@ -13,6 +13,8 @@ For some sliders the shape comes straight from single-slider Lightroom bakes
   and nothing clips.
 * Vibrance: a chroma gain against chroma, scaled per hue band, applied around a
   pivot between each color's min and max channel.
+* White balance (incremental temperature/tint): stops per channel on the exposure
+  shoulder, per baked amount.
 
 The numbers are measurements of Lightroom's behaviour on synthetic calibration
 images; they contain nothing from any preset.
@@ -118,13 +120,55 @@ class ExposureShoulder:
     shoulder: float
     strength: float
 
-    def apply(self, values: np.ndarray, ev: float) -> np.ndarray:
-        if ev == 0:
+    def apply(self, values: np.ndarray, ev: float | np.ndarray) -> np.ndarray:
+        """``ev`` stops on every value, or one ``ev`` per channel (broadcast over the last axis)."""
+        ev = np.asarray(ev, dtype=np.float64)
+        if not np.any(ev):
             return values
         p = self.shoulder
         x = np.clip(values, 0.0, 1.0)
         s = p * (np.maximum(1.0 - x, 1e-300) ** (-1.0 / p) - 1.0) * 2.0 ** (self.strength * ev)
-        return np.where(x >= 1.0, 1.0, 1.0 - (1.0 + s / p) ** -p)
+        out = np.where(x >= 1.0, 1.0, 1.0 - (1.0 + s / p) ** -p)
+        return np.where(ev == 0, values, out)  # channels with no stops pass through exactly
+
+    def stops(self, before: np.ndarray, after: np.ndarray) -> np.ndarray:
+        """The stops that take ``before`` to ``after`` (inverse of ``apply``; values inside (0, 1))."""
+        def stretch(v):
+            return self.shoulder * ((1.0 - v) ** (-1.0 / self.shoulder) - 1.0)
+        return np.log2(stretch(after) / stretch(before)) / self.strength
+
+
+# --- white balance --------------------------------------------------------------------------------
+
+def _table_at(table: Mapping[float, np.ndarray], amount: float) -> np.ndarray:
+    zero = np.zeros_like(next(iter(table.values())))
+    a0, a1, t = _bracket(sorted([0.0, *table]), amount)
+    v0, v1 = (zero if a == 0 else table[a] for a in (a0, a1))
+    return (1 - t) * v0 + t * v1
+
+
+@dataclass(frozen=True, eq=False)
+class WhiteBalanceResponse:
+    """Incremental temperature/tint as stops per channel (R, G, B) on the exposure shoulder.
+
+    On a rendered image Lightroom brightens each channel along the same shoulder as
+    exposure, so white stays white. Temperature and tint add in stops.
+    """
+
+    temperature: Mapping[float, np.ndarray]
+    tint: Mapping[float, np.ndarray]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "temperature", _as_float_map(self.temperature, 3, "temperature stops"))
+        object.__setattr__(self, "tint", _as_float_map(self.tint, 3, "tint stops"))
+
+    def evs(self, temperature: float = 0.0, tint: float = 0.0) -> np.ndarray:
+        out = np.zeros(3)
+        if temperature:
+            out = out + _table_at(self.temperature, temperature)
+        if tint:
+            out = out + _table_at(self.tint, tint)
+        return out
 
 
 # --- vibrance -------------------------------------------------------------------------------------
@@ -171,6 +215,7 @@ class Response:
     exposure: ExposureShoulder
     tone: Mapping[str, CurveFamily]
     vibrance: VibranceResponse
+    white_balance: WhiteBalanceResponse
 
     def to_dict(self) -> dict:
         def table(m: Mapping[float, np.ndarray], digits: int) -> dict[str, list[float]]:
@@ -187,6 +232,10 @@ class Response:
                 "gains": table(self.vibrance.gains, 5),
                 "bands": table(self.vibrance.bands, 5),
             },
+            "white_balance": {
+                "temperature": table(self.white_balance.temperature, 5),
+                "tint": table(self.white_balance.tint, 5),
+            },
         }
 
     @classmethod
@@ -201,8 +250,9 @@ class Response:
             def table(d: Mapping[str, list[float]]) -> dict[float, np.ndarray]:
                 return {float(a): np.asarray(v, dtype=np.float64) for a, v in d.items()}
 
-            vib = data["vibrance"]
+            vib, wb = data["vibrance"], data["white_balance"]
             return cls(
+                white_balance=WhiteBalanceResponse(table(wb["temperature"]), table(wb["tint"])),
                 exposure=ExposureShoulder(float(data["exposure"]["shoulder"]), float(data["exposure"]["strength"])),
                 tone={k: CurveFamily(table(data["tone"][k])) for k in TONE_KEYS},
                 vibrance=VibranceResponse(tuple(vib["chroma"]), tuple(vib["pivots"]),

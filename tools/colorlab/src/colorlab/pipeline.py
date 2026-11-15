@@ -2,14 +2,13 @@
 
 Lightroom's exact formulas are not public. Every stage here is a plain, documented
 model with the properties a photographer expects: identity at default, endpoints
-held, tone curves monotonic, neutrals kept neutral. Exposure, the tone sliders,
-the parametric curve and vibrance take their shapes from measured Lightroom
-responses (``colorlab.response``); the ``K_*`` strengths of the other stages are
-fitted to single-slider Lightroom bakes (``colorlab.calibration``).
+held, tone curves monotonic. White balance, exposure, the tone sliders, the
+parametric curve and vibrance take their shapes from measured Lightroom responses
+(``colorlab.response``); the ``K_*`` strengths of the other stages are fitted to
+single-slider Lightroom bakes (``colorlab.calibration``).
 
-Working space is ProPhoto RGB primaries. White balance runs on linear light.
-Every later stage runs per channel on sRGB-curve encoded values, the space
-Lightroom's tone curve panel shows. Spatial effects (grain, vignette, highlights/shadows,
+Working space is ProPhoto RGB primaries. Every stage runs on sRGB-curve encoded
+values, the space Lightroom's tone curve panel shows. Spatial effects (grain, vignette, highlights/shadows,
 clarity, texture, dehaze, sharpening, noise reduction) belong to a later stage and
 are not applied here.
 """
@@ -34,14 +33,11 @@ BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"
 _BAND_CENTERS = np.array([0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0, 360.0])
 _LUMA = WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
 
-#: measured shapes of exposure, the tone sliders, the parametric curve and vibrance
+#: measured shapes of white balance, exposure, the tone sliders, the parametric curve and vibrance
 RESPONSE: response.Response = response.load()
 
 # Stage strengths (slider value 100 == full strength), fitted with `colorlab.calibration`
-# to single-slider Lightroom bakes (2026-11-15, 143 bakes). The temperature/tint *shape* is still
-# wrong (12-26 dE at +-50/+-100), so these two are the best strengths for a model that needs redoing.
-K_TEMPERATURE = 0.00472  # log-gain per incremental temperature unit
-K_TINT = 0.0025
+# to single-slider Lightroom bakes (2026-11-15, 143 bakes).
 K_HUE = 0.831  # fraction of the gap to the neighbouring band at hue 100
 K_LUMINANCE = 0.708
 K_GRADE_SAT = 0.231
@@ -142,22 +138,19 @@ def apply_curves(rgb: np.ndarray, master: Curve = IDENTITY_CURVE, red: Curve = I
     return out
 
 
-# --- white balance (linear) -------------------------------------------------------------------------------
+# --- white balance, exposure and tone (encoded, measured shapes) -----------------------------
 
-def white_balance(lin: np.ndarray, temperature: float = 0.0, tint: float = 0.0) -> np.ndarray:
-    """Incremental temperature/tint (-100..100) as channel gains that keep luminance."""
+def white_balance(enc: np.ndarray, temperature: float = 0.0, tint: float = 0.0) -> np.ndarray:
+    """Incremental temperature/tint (-100..100): Lightroom's measured stops per channel on the
+    exposure shoulder, so black and white stay put."""
     _check("temperature", temperature, -100, 100)
     _check("tint", tint, -100, 100)
-    lin = _as_rgb(lin)
+    enc = _as_rgb(enc)
     if temperature == 0 and tint == 0:
-        return lin
-    t, m = K_TEMPERATURE * temperature, K_TINT * tint
-    gains = np.exp(np.array([t + m, -m, -t + m]))
-    gains /= gains @ WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
-    return lin * gains
+        return enc
+    return RESPONSE.exposure.apply(enc, RESPONSE.white_balance.evs(temperature, tint))
 
 
-# --- exposure and tone (encoded, measured shapes) ---------------------------------------------
 
 def exposure(enc: np.ndarray, ev: float) -> np.ndarray:
     """Exposure in stops (-5..5): Lightroom's shoulder, which keeps white and never clips."""
@@ -475,8 +468,9 @@ def render(preset: Preset, image: np.ndarray, space: cs.RGBSpace = cs.SRGB) -> n
     img = _as_rgb(image)
     s = _sliders(preset)
     lin = cs.convert(cs.decode(np.clip(img, 0.0, 1.0), WORKING_TRANSFER), space, WORKING)
-    lin = white_balance(lin, s.number("IncrementalTemperature"), s.number("IncrementalTint"))
-    enc = exposure(cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER), s.number("Exposure2012"))
+    enc = cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
+    enc = white_balance(enc, s.number("IncrementalTemperature"), s.number("IncrementalTint"))
+    enc = exposure(enc, s.number("Exposure2012"))
     for name in ORDER:
         enc = ENCODED_STAGES[name](s, enc)
     out = cs.convert(cs.decode(enc, WORKING_TRANSFER), WORKING, space)

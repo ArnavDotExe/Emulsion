@@ -39,14 +39,15 @@ CAL_GROUP = "FilmSim Calibration"
 
 #: search range for each strength
 K_BOUNDS: dict[str, tuple[float, float]] = {
-    "K_TEMPERATURE": (0.0, 0.05),
-    "K_TINT": (0.0, 0.05),
     "K_HUE": (0.0, 1.0),
     "K_LUMINANCE": (0.0, 1.5),
     "K_GRADE_SAT": (0.0, 1.0),
     "K_GRADE_LUM": (0.0, 1.0),
     "K_MIXER": (0.0, 3.0),
 }
+
+_WB_KEYS = (("Temperature", "IncrementalTemperature", "IncrementalTint"),
+            ("Tint", "IncrementalTint", "IncrementalTemperature"))
 
 Points = tuple[tuple[int, int], ...]
 _CURVE_KEYS = ("ToneCurvePV2012", "ToneCurvePV2012Red", "ToneCurvePV2012Green", "ToneCurvePV2012Blue")
@@ -69,15 +70,13 @@ def _sweep(label: str, key: str, values: Sequence[float], fits: tuple[str, ...] 
 
 def _build() -> tuple[Variant, ...]:
     out: list[Variant] = []
-    # Exposure, tone, parametric and vibrance shapes are measured (`response`), at several amounts.
+    # White balance, exposure, tone, parametric and vibrance shapes are measured (`response`).
     out += _sweep("Exposure", "Exposure2012", (-2, -1, -0.5, 0.5, 1, 2))
     for label, key in (("Contrast", "Contrast2012"), ("Whites", "Whites2012"), ("Blacks", "Blacks2012")):
         out += _sweep(label, key, (-100, -50, -25, 25, 50, 100))
     # Lightroom ignores an incremental temperature or tint that comes without its partner.
-    out += _sweep("Temperature", "IncrementalTemperature", (-100, -50, 50, 100), ("K_TEMPERATURE",),
-                  {"WhiteBalance": "Custom", "IncrementalTint": "0"})
-    out += _sweep("Tint", "IncrementalTint", (-100, -50, 50, 100), ("K_TINT",),
-                  {"WhiteBalance": "Custom", "IncrementalTemperature": "0"})
+    for label, key, partner in _WB_KEYS:
+        out += _sweep(label, key, (-100, -50, -25, 25, 50, 100), extra={"WhiteBalance": "Custom", partner: "0"})
     for region in ("Shadows", "Darks", "Lights", "Highlights"):
         out += _sweep(f"Parametric {region}", f"Parametric{region}", (-100, -50, 50, 100))
     custom = {"ToneCurveName2012": "Custom"}
@@ -309,6 +308,23 @@ def _vibrance_tables(knots: np.ndarray, c: np.ndarray, bw: np.ndarray, d: np.nda
     return table, bands
 
 
+def _white_balance_stops(lut: Lut3D, shoulder: response.ExposureShoulder) -> np.ndarray:
+    """Stops per channel (R, G, B) that take a neutral ramp to the bake, on the exposure shoulder.
+
+    Uses the median over ramp samples away from black, white and any clipped output.
+    """
+    ramp = np.repeat(response.X[:, None], 3, axis=1)
+    baked = apply_lut(lut, ramp).astype(np.float64)
+    out = _to_working(baked)
+    stops = np.zeros(3)
+    for ch in range(3):
+        ok = ((ramp[:, ch] > 0.02) & (ramp[:, ch] < 0.9) & (out[:, ch] > 0.005) & (out[:, ch] < 0.98)
+              & np.all(baked < 1 - 1e-4, axis=1))
+        if ok.any():
+            stops[ch] = float(np.median(shoulder.stops(ramp[ok, ch], out[ok, ch])))
+    return np.round(stops, 4)
+
+
 def _measure_vibrance(luts: Mapping[float, Lut3D], base: response.VibranceResponse) -> response.VibranceResponse:
     grid = Lut3D.identity(_VIBRANCE_GRID).table.reshape(-1, 3).astype(np.float64)
     wi = _to_working(grid)
@@ -381,7 +397,19 @@ def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS
         report.measured.append("Vibrance")
     else:
         report.kept.append("Vibrance")
-    report.response = response.Response(exposure=exposure, tone=tone, vibrance=vibrance)
+    wb_tables = {}
+    for _label, key, partner in _WB_KEYS:
+        found = {float(v.settings[key]): luts[v.name] for v in variants
+                 if v.name in luts and v.settings.get(partner) == "0" and float(v.settings.get(key, 0)) != 0}
+        if found:
+            wb_tables[key] = {a: _white_balance_stops(lut, exposure) for a, lut in found.items()}
+            report.measured.append(key)
+        else:
+            base_wb = base.white_balance
+            wb_tables[key] = base_wb.temperature if key == "IncrementalTemperature" else base_wb.tint
+            report.kept.append(key)
+    white_balance = response.WhiteBalanceResponse(wb_tables["IncrementalTemperature"], wb_tables["IncrementalTint"])
+    report.response = response.Response(exposure=exposure, tone=tone, vibrance=vibrance, white_balance=white_balance)
     return report
 
 
