@@ -8,6 +8,8 @@ import tifffile
 from colorlab.preset import parse_preset
 from colorlab.spatial_calibration import (
     CHARTS,
+    SCALE_SIZES,
+    SCALE_VARIANTS,
     SIZE,
     SPATIAL_GROUP,
     SPATIAL_VARIANTS,
@@ -241,3 +243,54 @@ def test_cli_kit_and_collect(tmp_path, capsys, kit):
 def test_cli_collect_errors_exit_1(tmp_path, capsys):
     assert main(["collect", str(tmp_path), str(tmp_path / "no-kit"), str(tmp_path / "out")]) == 1
     assert "error:" in capsys.readouterr().err
+
+
+# --- image-size test: the same charts and settings at other sizes ---------------------------------
+
+def test_charts_scale_with_the_frame():
+    small = (SIZE[0] // 2, SIZE[1] // 2)
+    imgs, regions = charts(small)
+    _, base = charts()
+    assert all(img.shape == (*small, 3) for img in imgs.values())
+    for chart in ("scene", "levels"):
+        for name, reg in base[chart].items():
+            assert regions[chart][name]["box"] == [v // 2 for v in reg["box"]], (chart, name)
+    assert regions["checker"]["checker"]["cell"] == base["checker"]["checker"]["cell"] // 2
+    bars = [r["period"] for r in regions["scene"].values() if r["kind"] == "bars"]
+    assert bars == [r["period"] // 2 for r in base["scene"].values() if r["kind"] == "bars"]
+
+
+def test_scale_variants_repeat_base_settings_at_each_size():
+    assert SIZE not in SCALE_SIZES and len(SCALE_SIZES) == 2
+    assert {SCALE_SIZES[0][1], SCALE_SIZES[1][1]} == {SIZE[1] // 2, SIZE[1] * 2}
+    by_name = {v.name: v for v in SCALE_VARIANTS}
+    for h, w in SCALE_SIZES:
+        for base in ("Identity Scene", "Identity Levels", "Identity Checker", "Shadows +50", "Clarity +50",
+                     "Clarity -50", "Texture +50", "Dehaze +50", "Sharpen 50", "Grain 50", "Vignette -50"):
+            v = by_name[f"Spatial {w}x{h} {base}"]
+            ref = BY_NAME[f"Spatial {base}"]
+            assert v.size == (h, w) and v.chart == ref.chart and dict(v.settings) == dict(ref.settings)
+            assert v.baseline == ref.baseline
+
+
+def test_scale_kit_writes_each_image_at_its_own_size_and_collect_checks_it(tmp_path):
+    h, w = SCALE_SIZES[0]
+    picked = [v for v in SCALE_VARIANTS if v.size == (h, w)][:4]
+    kit = tmp_path / "kit"
+    write_spatial_kit(kit, picked)
+    manifest = json.loads((kit / "manifest.json").read_text(encoding="utf-8"))
+    assert all(e["size"] == [h, w] for e in manifest["entries"])
+    assert f"scene {w}x{h}" in manifest["charts"]
+    assert read_rgb_tiff(kit / "images" / f"{picked[0].name}.tif").shape == (h, w, 3)
+    exports = tmp_path / "exports"
+    for v in picked:
+        _export(kit, exports, v.name, change=0.02)
+    assert collect_spatial(exports, kit, tmp_path / "out").collected == [v.name for v in picked]
+
+
+def test_cli_kit_scale_test(tmp_path, capsys, monkeypatch):
+    import colorlab.spatial_calibration as sc
+    small = tuple(v for v in SCALE_VARIANTS if v.size == SCALE_SIZES[0])
+    monkeypatch.setattr(sc, "SCALE_VARIANTS", small)
+    assert main(["kit", str(tmp_path / "k"), "--scale-test"]) == 0
+    assert f"{len(small)} spatial calibration image" in capsys.readouterr().out
