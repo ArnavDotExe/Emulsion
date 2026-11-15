@@ -307,3 +307,53 @@ def test_cli_response_writes_a_loadable_file(tmp_path, capsys):
 def test_cli_response_without_any_bakes_fails(tmp_path, capsys):
     assert main(["response", str(tmp_path), "--out", str(tmp_path / "r.json")]) == 1
     assert "no calibration bakes" in capsys.readouterr().err
+
+
+# --- regenerating the response must not depend on the file it regenerates -------------------------
+
+def _unreadable(*_args, **_kwargs):
+    raise response.ColorlabError("broken response file")
+
+
+def test_calibration_imports_even_when_the_shipped_response_is_unreadable():
+    import subprocess
+    import sys
+
+    code = ("import colorlab.response as r\n"
+            "def broken(*a, **k):\n    raise r.ColorlabError('broken')\n"
+            "r.load = broken\n"
+            "import colorlab.calibration\n")
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+
+
+def test_pipeline_reads_the_response_on_first_use_and_reports_a_broken_file(monkeypatch):
+    monkeypatch.setattr(pipeline, "RESPONSE", None)
+    monkeypatch.setattr(response, "load", _unreadable)
+    with pytest.raises(response.ColorlabError, match="broken response file"):
+        pipeline.exposure(np.full((1, 3), 0.5), 1.0)
+
+
+def test_measure_response_without_a_readable_base_uses_identity_and_warns(tmp_path, monkeypatch):
+    luts = write_neutral_bakes(tmp_path / "luts", solo("Contrast2012"), lambda v: (lambda x: x))
+    monkeypatch.setattr(response, "load", _unreadable)
+    report = measure_response(luts)
+    assert any("base response" in w for w in report.warnings)
+    np.testing.assert_allclose(report.response.tone["Whites2012"].curve(100), response.X)
+    np.testing.assert_allclose(report.response.white_balance.evs(100, 100), 0.0)
+
+
+def test_white_balance_bake_without_usable_samples_keeps_the_base_and_warns(tmp_path):
+    base = response.load()
+    wb = [BY_NAME["Cal Temperature +50"]]
+    luts = write_neutral_bakes(tmp_path / "luts", wb, lambda v: (lambda x: np.ones_like(x)))  # all white
+    report = measure_response(luts)
+    assert any("IncrementalTemperature" in w and "50" in w for w in report.warnings)
+    np.testing.assert_allclose(report.response.white_balance.temperature[50.0], base.white_balance.temperature[50.0])
+
+
+def test_cli_response_prints_warnings(tmp_path, capsys, monkeypatch):
+    luts = write_neutral_bakes(tmp_path / "luts", solo("Contrast2012"), lambda v: (lambda x: x))
+    monkeypatch.setattr(response, "load", _unreadable)
+    assert main(["response", str(luts), "--out", str(tmp_path / "r.json")]) == 0
+    assert "warning: " in capsys.readouterr().out
