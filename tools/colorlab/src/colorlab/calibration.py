@@ -49,6 +49,7 @@ K_BOUNDS: dict[str, tuple[float, float]] = {
 }
 
 Points = tuple[tuple[int, int], ...]
+_CURVE_KEYS = ("ToneCurvePV2012", "ToneCurvePV2012Red", "ToneCurvePV2012Green", "ToneCurvePV2012Blue")
 
 
 @dataclass(frozen=True)
@@ -72,9 +73,11 @@ def _build() -> tuple[Variant, ...]:
     for label, key, k in (("Contrast", "Contrast2012", "K_CONTRAST"), ("Whites", "Whites2012", "K_WHITES"),
                           ("Blacks", "Blacks2012", "K_BLACKS")):
         out += _sweep(label, key, (-100, -50, 50, 100), (k,))
-    custom_wb = {"WhiteBalance": "Custom"}
-    out += _sweep("Temperature", "IncrementalTemperature", (-100, -50, 50, 100), ("K_TEMPERATURE",), custom_wb)
-    out += _sweep("Tint", "IncrementalTint", (-100, -50, 50, 100), ("K_TINT",), custom_wb)
+    # Lightroom ignores an incremental temperature or tint that comes without its partner.
+    out += _sweep("Temperature", "IncrementalTemperature", (-100, -50, 50, 100), ("K_TEMPERATURE",),
+                  {"WhiteBalance": "Custom", "IncrementalTint": "0"})
+    out += _sweep("Tint", "IncrementalTint", (-100, -50, 50, 100), ("K_TINT",),
+                  {"WhiteBalance": "Custom", "IncrementalTemperature": "0"})
     for region in ("Shadows", "Darks", "Lights", "Highlights"):
         out += _sweep(f"Parametric {region}", f"Parametric{region}", (-100, 100), ("K_PARAMETRIC",))
     custom = {"ToneCurveName2012": "Custom"}
@@ -84,7 +87,9 @@ def _build() -> tuple[Variant, ...]:
         ("Red", "ToneCurvePV2012Red", ((0, 0), (128, 168), (255, 255))),
         ("Blue Fade", "ToneCurvePV2012Blue", ((0, 40), (255, 215))),
     ):
-        out.append(Variant(f"Cal Curve {name}", custom, {key: pts}))
+        # Lightroom ignores a lone channel curve; list all four, the unused ones as identity.
+        curves = {k: ((0, 0), (255, 255)) for k in _CURVE_KEYS}
+        out.append(Variant(f"Cal Curve {name}", custom, {**curves, key: pts}))
     for band in BANDS:
         b = band.capitalize()
         out += _sweep(f"HSL Hue {b}", f"HueAdjustment{b}", (-100, 100), ("K_HUE",))
@@ -247,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     pre = sub.add_parser("presets", help="write the single-slider calibration presets")
     pre.add_argument("out_dir", type=Path)
+    pre.add_argument("--only-missing", type=Path, metavar="LUT_DIR",
+                     help="only write variants that have no .cube in LUT_DIR yet (to re-bake failures)")
     fp = sub.add_parser("fit", help="fit the pipeline strengths to collected calibration bakes")
     fp.add_argument("lut_dir", type=Path)
     fp.add_argument("--grid", type=int, default=17, help="sample grid size per axis (default 17)")
@@ -254,7 +261,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "presets":
-            paths = write_calibration_presets(args.out_dir)
+            variants = VARIANTS
+            if args.only_missing is not None:
+                variants = [v for v in VARIANTS if not (args.only_missing / f"{v.name}.cube").is_file()]
+            paths = write_calibration_presets(args.out_dir, variants)
             print(f"wrote {len(paths)} calibration preset(s) to {args.out_dir}; "
                   f"next: python -m colorlab.bake kit {args.out_dir} <kit folder>")
             return 0
