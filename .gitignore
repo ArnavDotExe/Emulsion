@@ -1,0 +1,39 @@
+# --- Private material: never publish -------------------------------------
+# Commercial / personal Lightroom presets and anything derived from them.
+presets/private/
+looks/private/
+# Integration tests that name/inspect the private presets.
+tools/colorlab/tests/private/
+# Test photos (may contain faces, locations, EXIF GPS).
+samples/
+# Third-party app packages kept only for local study.
+*.ipa
+*.apk
+*.aab
+
+# --- Python ---------------------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+
+# --- Generated output -----------------------------------------------------
+out/
+reports/
+
+# --- Editors / OS ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Local Claude Code state ----------------------------------------------
+.claude/settings.local.json
