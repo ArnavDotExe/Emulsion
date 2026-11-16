@@ -297,6 +297,55 @@ gray ramp at equal weight. On colors alone the neutrals drift: grays 2.32 ΔE.
 - Private presets: unchanged at median 2.92 / mean 4.13, since few of them use incremental
   Temperature/Tint.
 
+### White-balance hue preservation per amount (the "over-range" stage)
+
+Journey: as a photographer, a strong Temperature or Tint keeps saturated colors' hues the way
+Lightroom does, instead of mixing channels. The planned fix was a shared over-range/gamut-rolloff
+stage, on the theory that the error sat in colors pushed past 1. Measuring disproved that:
+
+- Lightroom's share of output at 0 or 1 matches ours, so the final clip is fine.
+- Temperature −100's error is the same in range (11.4) as out of range (11.6).
+- The real cause is mixing. Per-cone stops brighten every channel of a saturated color: pure
+  green gains 0.66 of red where Lightroom keeps 0.
+
+The fix is hue preservation in the white-balance rolloff, after the DNG SDK RGB-tone method. On the
+shoulder's stretched scale (`ExposureShoulder.stretch`/`rolloff`, where stops are a gain), each
+pixel's largest and smallest channel roll off on their own. The middle channel is blended, by
+`hue_preservation` ∈ [0, 1], toward its place between them. One constant for all amounts failed:
+0.5 helped the ±100 bakes but took Tint ±25 from 0.6 to 1.8 ΔE. So it is measured per bake
+(`WhiteBalanceResponse.temperature_hue`/`tint_hue`). `calibration response` refits the stops at each
+of 9 values in [0, 1] and keeps the best. The best value grows with the amount:
+
+| Amount | −100 | −50 | −25 | +25 | +50 | +100 |
+|---|---|---|---|---|---|---|
+| Temperature | 1.0 | 0.75 | 0.375 | 0.25 | 0.375 | 0.625 |
+| Tint | 0.5 | 0.25 | 0.125 | 0.0 | 0.125 | 0.75 |
+
+Between amounts it is linear, and 0 at a zero slider, so no change stays no change. With both
+sliders set, the larger of the two applies, since no combined bakes measure the mix.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | The exposure shoulder is a gain between `stretch` and `rolloff`, and `apply`/`stops` use them | `test_response.py::test_exposure_shoulder_is_a_gain_between_stretch_and_rolloff` | PASS |
+| 2 | Hue preservation is per amount: 0 with no tables or at zero, linear between amounts, the larger of temperature's and tint's; values outside [0, 1] are rejected | `test_white_balance_hue_preservation_is_per_amount_zero_at_zero_and_the_larger_of_the_two` | PASS |
+| 3 | The tables round-trip, and files without them (or with an older scalar) mean per channel | `test_white_balance_hue_tables_round_trip_and_older_files_mean_per_channel` | PASS |
+| 4 | The shipped tables preserve more hue at ±100 than at ±25 | `test_shipped_white_balance_preserves_more_hue_at_larger_amounts` | PASS |
+| 5 | The rolloff keeps each pixel's largest and smallest channel, places the middle one, and is per channel at 0 | `test_pipeline.py::test_white_balance_hue_preservation_keeps_max_and_min_and_places_the_middle_channel` | PASS |
+| 6 | `measure_response` recovers a known per-amount hue preservation (0 at 25, 0.75 at 100) and its stops from synthetic bakes | `test_calibration.py::test_measure_response_recovers_white_balance_hue_preservation_per_amount` | PASS |
+
+- RED `d8de30f` and `5a24409`: these failed because `stretch`/`rolloff` and the hue tables
+  didn't exist yet. `5a24409` revised `d8de30f`'s single constant to per-amount tables.
+- 12 WB bakes: colors 3.23 → 2.08 ΔE, gray ramp 1.37 → 0.88.
+  - Temperature −100: 11.5 → 5.88.
+  - Temperature +100: 5.0 → 3.07.
+  - Tint ±100: 4.1 → 2.5–3.0.
+  - The ±25 bakes stay at or under 1.3.
+- All 147 bakes: 1.94 → 1.84.
+- Private presets: median 2.92 → 2.90, mean 4.13 → 4.12. Few of them use incremental
+  Temperature/Tint.
+- `calibration response` now takes about 2 minutes, since it runs 9 fits per white-balance bake.
+- The mid-gray Lightroom match is back to atol 0.03, from 0.035; the worst gray is now 0.023 off.
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one

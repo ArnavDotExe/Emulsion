@@ -107,11 +107,14 @@ Lightroom quirks:
 
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
-- Accuracy against the user's 44 private presets: median ΔE2000 2.92, mean 4.13. Tone curves
+- Accuracy against the user's 44 private presets: median ΔE2000 2.90, mean 4.12. Tone curves
   (exposure, contrast, whites/blacks, parametric, master curve) are applied hue-preservingly
   (`pipeline.rgb_tone`); per-channel curves stay per channel. White balance is per-channel stops
-  in Bradford cone space (`pipeline.white_balance_stops`, `WhiteBalanceResponse.space`).
-- All 147 calibration bakes are collected (mean 1.94 ΔE); no re-bake is pending.
+  in Bradford cone space (`pipeline.white_balance_stops`, `WhiteBalanceResponse.space`), with
+  measured hue preservation per amount (`WhiteBalanceResponse.temperature_hue`/`tint_hue`): each
+  pixel's middle channel is partly placed between its largest and smallest, so saturated colors
+  don't mix.
+- All 147 calibration bakes are collected (mean 1.84 ΔE); no re-bake is pending.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
     deterministic (repeat exports are bit-identical).
@@ -127,17 +130,14 @@ Lightroom quirks:
 - 6b has started. The spatial calibration kit is built (`out/spatial-kit`, 70 images) and is waiting
   for the user to export it from Lightroom. Next: `collect`, then measure each effect and model it.
 - Biggest single-slider gaps:
-  - Temperature −100 11.5, Temperature +100 5.0, Tint ±100 4.1. The error sits in colors pushed
-    past 1: our white balance clips each channel, while Lightroom rolls bright saturated colors
-    toward white. A shared over-range/gamut-rolloff stage is the next global fix. After it, refit
-    white balance with `calibration response`.
+  - Temperature −100 5.9, Temperature +100 3.1, Tint ±100 2.5–3.0 (the 12 WB bakes are 2.08,
+    with a gray ramp of 0.88). The planned over-range stage was disproved: the clip matches
+    Lightroom, and the error was channel mixing, now fixed by the hue preservation.
   - Color Grading Highlights/Shadows at S50 are 5.9–6.8, and Balance −50 is 4.8.
   - Vibrance −100 is 4.9. Saturation −50 is 3.0; saturation is still a formula and could be
     measured the same way.
   - Since the hue-preserving tone, Exposure +2 is 1.8 and Whites +100 is 0.6.
-  - The white-balance refit traded colors (3.88 → 3.23 over the 12 bakes) against grays (gray ramp
-    1.45 → 1.37, but mid-gray Tint −100 is 0.032 off). `calibration._WB_GRAY_WEIGHT` sets
-    that balance.
+  - `calibration._WB_GRAY_WEIGHT` sets the white-balance fit's balance of colors against grays.
 - Then:
   - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,
     noise reduction). The worst presets are dominated by these.

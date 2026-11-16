@@ -130,9 +130,9 @@ def test_temperature_warms_and_tint_adds_magenta_by_brightening_the_other_channe
 def test_render_white_balance_matches_lightroom_on_gray(settings, expected):
     preset = parse_preset(make_xmp({"WhiteBalance": "Custom", "IncrementalTemperature": "0",
                                     "IncrementalTint": "0", **settings}))
-    # 0.035: the Bradford stops are fitted to colors and the whole gray ramp, which puts Tint -100's
-    # red 0.032 off at this one gray (1.2 dE); working-space stops fitted on grays alone were 0.014
-    np.testing.assert_allclose(render(preset, np.array([[0.46] * 3]))[0], expected, atol=0.035)
+    # the Bradford stops are fitted to colors and the whole gray ramp, which leaves Temperature -50
+    # and Tint -100 about 0.023 off at this one gray; working-space stops fitted on grays alone were 0.014
+    np.testing.assert_allclose(render(preset, np.array([[0.46] * 3]))[0], expected, atol=0.03)
 
 
 def test_exposure_keeps_white_and_rolls_off_highlights_like_lightroom():

@@ -178,30 +178,54 @@ def white_balance(enc: np.ndarray, temperature: float = 0.0, tint: float = 0.0) 
     if temperature == 0 and tint == 0:
         return enc
     wb = _response().white_balance
-    return white_balance_stops(enc, wb.evs(temperature, tint), wb.space)
+    return white_balance_stops(enc, wb.evs(temperature, tint), wb.space, hue_preservation=wb.hue_preservation(temperature, tint))
 
 
 def white_balance_stops(enc: np.ndarray, evs: np.ndarray, space: str = "working",
-                        shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
+                        shoulder: response.ExposureShoulder | None = None,
+                        hue_preservation: float = 0.0) -> np.ndarray:
     """Per-channel stops ``evs`` on the exposure shoulder (default: the shipped one), in the
     working space's channels or in Bradford cone space (``response.WB_SPACES``).
 
     In cone space each pixel goes to linear cone responses (white = 1, 1, 1), is encoded with
     the working curve (odd-symmetric, so slightly negative cones survive), gets its stops, and
     comes back. Black and white stay put either way.
+
+    The stops are gains on the shoulder's stretched scale. Each pixel's largest and smallest
+    channel always roll off on their own; ``hue_preservation`` (0..1) blends the middle channel
+    from its own rolloff toward its place between them on the stretched scale (the RGB-tone
+    method), which keeps saturated colors from mixing.
     """
     if space not in response.WB_SPACES:
         raise ParameterError(f"white balance space {space!r} is not one of {', '.join(response.WB_SPACES)}")
+    _check("hue_preservation", hue_preservation, 0.0, 1.0)
     enc = _as_rgb(enc)
     evs = np.asarray(evs, dtype=np.float64)
     if not np.any(evs):
         return enc
     shoulder = shoulder if shoulder is not None else _response().exposure
     if space == "working":
-        return shoulder.apply(enc, evs)
+        return _rolloff_stops(enc, evs, shoulder, hue_preservation)
     cones = cs.encode(cs.decode(enc, WORKING_TRANSFER) @ _CONES.T, WORKING_TRANSFER)
-    moved = np.sign(cones) * shoulder.apply(np.minimum(np.abs(cones), 1.0), evs)
+    moved = np.sign(cones) * _rolloff_stops(np.minimum(np.abs(cones), 1.0), evs, shoulder, hue_preservation)
     return cs.encode(cs.decode(moved, WORKING_TRANSFER) @ _CONES_INV.T, WORKING_TRANSFER)
+
+
+def _rolloff_stops(x: np.ndarray, evs: np.ndarray, shoulder: response.ExposureShoulder,
+                   hue_preservation: float) -> np.ndarray:
+    """``evs`` per channel on the shoulder, with the middle channel partly placed (see above)."""
+    out = shoulder.apply(x, evs)
+    if not hue_preservation:
+        return out
+    z = shoulder.stretch(x) * 2.0 ** (shoulder.strength * evs)
+    i_hi, i_lo = z.argmax(axis=-1)[..., None], z.argmin(axis=-1)[..., None]
+    z_hi, z_lo = np.take_along_axis(z, i_hi, -1), np.take_along_axis(z, i_lo, -1)
+    o_hi, o_lo = np.take_along_axis(out, i_hi, -1), np.take_along_axis(out, i_lo, -1)
+    span = z_hi - z_lo
+    with np.errstate(invalid="ignore", over="ignore"):  # a channel at 1 stretches to a huge value
+        place = np.nan_to_num((z - z_lo) / np.where(span > 0, span, 1.0))
+    placed = o_lo + place * (o_hi - o_lo)
+    return out + hue_preservation * (placed - out)
 
 
 def exposure(enc: np.ndarray, ev: float) -> np.ndarray:

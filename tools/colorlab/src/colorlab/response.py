@@ -121,22 +121,27 @@ class ExposureShoulder:
     shoulder: float
     strength: float
 
+    def stretch(self, values: np.ndarray) -> np.ndarray:
+        """Values in [0, 1] to the shoulder's unbounded stretched scale, where exposure is a gain."""
+        x = np.clip(values, 0.0, 1.0)
+        return self.shoulder * (np.maximum(1.0 - x, 1e-300) ** (-1.0 / self.shoulder) - 1.0)
+
+    def rolloff(self, stretched: np.ndarray) -> np.ndarray:
+        """The stretched scale back to [0, 1): the highlight rolloff (inverse of ``stretch``)."""
+        return 1.0 - (1.0 + np.maximum(stretched, 0.0) / self.shoulder) ** -self.shoulder
+
     def apply(self, values: np.ndarray, ev: float | np.ndarray) -> np.ndarray:
         """``ev`` stops on every value, or one ``ev`` per channel (broadcast over the last axis)."""
         ev = np.asarray(ev, dtype=np.float64)
         if not np.any(ev):
             return values
-        p = self.shoulder
         x = np.clip(values, 0.0, 1.0)
-        s = p * (np.maximum(1.0 - x, 1e-300) ** (-1.0 / p) - 1.0) * 2.0 ** (self.strength * ev)
-        out = np.where(x >= 1.0, 1.0, 1.0 - (1.0 + s / p) ** -p)
+        out = np.where(x >= 1.0, 1.0, self.rolloff(self.stretch(x) * 2.0 ** (self.strength * ev)))
         return np.where(ev == 0, values, out)  # channels with no stops pass through exactly
 
     def stops(self, before: np.ndarray, after: np.ndarray) -> np.ndarray:
         """The stops that take ``before`` to ``after`` (inverse of ``apply``; values inside (0, 1))."""
-        def stretch(v):
-            return self.shoulder * ((1.0 - v) ** (-1.0 / self.shoulder) - 1.0)
-        return np.log2(stretch(after) / stretch(before)) / self.strength
+        return np.log2(self.stretch(after) / self.stretch(before)) / self.strength
 
 
 # --- white balance --------------------------------------------------------------------------------
@@ -156,15 +161,25 @@ class WhiteBalanceResponse:
     exposure, so white stays white. Temperature and tint add in stops. ``space`` names the
     channels: ``"working"`` (R, G, B of the working space) or ``"bradford"`` (the Bradford
     cone responses, scaled so white is 1, 1, 1: a von Kries-style adaptation).
+    ``temperature_hue`` and ``tint_hue`` are the measured hue preservation per amount (see
+    ``hue_preservation``); empty tables mean per channel everywhere.
     """
 
     temperature: Mapping[float, np.ndarray]
     tint: Mapping[float, np.ndarray]
     space: str = "working"
+    temperature_hue: Mapping[float, float] = field(default_factory=dict)
+    tint_hue: Mapping[float, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.space not in WB_SPACES:
             raise ColorlabError(f"white balance space {self.space!r} is not one of {', '.join(WB_SPACES)}")
+        for name in ("temperature_hue", "tint_hue"):
+            table = {float(a): float(v) for a, v in getattr(self, name).items()}
+            bad = {a: v for a, v in table.items() if not 0.0 <= v <= 1.0}
+            if bad:
+                raise ColorlabError(f"white balance {name} must be in [0, 1]; got {bad}")
+            object.__setattr__(self, name, table)
         object.__setattr__(self, "temperature", _as_float_map(self.temperature, 3, "temperature stops"))
         object.__setattr__(self, "tint", _as_float_map(self.tint, 3, "tint stops"))
 
@@ -175,6 +190,19 @@ class WhiteBalanceResponse:
         if tint:
             out = out + _table_at(self.tint, tint)
         return out
+
+    def hue_preservation(self, temperature: float = 0.0, tint: float = 0.0) -> float:
+        """How far each pixel's middle channel follows its place between the largest and smallest
+        channel (0: its own rolloff, 1: the RGB-tone method; see ``pipeline.white_balance_stops``).
+
+        Linear between measured amounts and 0 at a zero slider, so no change stays no change. With
+        both sliders moved it is the larger of the two, since no combined bakes measure the mix.
+        """
+        def at(table: Mapping[float, float], amount: float) -> float:
+            if not table or not amount:
+                return 0.0
+            return float(_table_at({a: np.array([v]) for a, v in table.items()}, amount)[0])
+        return max(at(self.temperature_hue, temperature), at(self.tint_hue, tint))
 
 
 # --- vibrance -------------------------------------------------------------------------------------
@@ -240,6 +268,10 @@ class Response:
             },
             "white_balance": {
                 "space": self.white_balance.space,
+                "hue_preservation": {
+                    "temperature": {f"{a:g}": round(v, 4) for a, v in sorted(self.white_balance.temperature_hue.items())},
+                    "tint": {f"{a:g}": round(v, 4) for a, v in sorted(self.white_balance.tint_hue.items())},
+                },
                 "temperature": table(self.white_balance.temperature, 5),
                 "tint": table(self.white_balance.tint, 5),
             },
@@ -258,9 +290,13 @@ class Response:
                 return {float(a): np.asarray(v, dtype=np.float64) for a, v in d.items()}
 
             vib, wb = data["vibrance"], data["white_balance"]
+            hue = wb.get("hue_preservation")
+            hue = hue if isinstance(hue, Mapping) else {}  # older files: per channel
             return cls(
                 white_balance=WhiteBalanceResponse(table(wb["temperature"]), table(wb["tint"]),
-                                                   space=wb.get("space", "working")),
+                                                   space=wb.get("space", "working"),
+                                                   temperature_hue=hue.get("temperature", {}),
+                                                   tint_hue=hue.get("tint", {})),
                 exposure=ExposureShoulder(float(data["exposure"]["shoulder"]), float(data["exposure"]["strength"])),
                 tone={k: CurveFamily(table(data["tone"][k])) for k in TONE_KEYS},
                 vibrance=VibranceResponse(tuple(vib["chroma"]), tuple(vib["pivots"]),
