@@ -473,6 +473,31 @@ def test_white_balance_stops_in_cone_space_keep_black_and_white_and_mix_channels
         white_balance_stops(color, evs, "lab")
 
 
+def test_white_balance_hue_preservation_keeps_max_and_min_and_places_the_middle_channel():
+    from colorlab.pipeline import white_balance_stops
+    from colorlab.response import load
+    sh = load().exposure
+    evs = np.array([0.2, 0.9, 2.5])
+    color = np.array([[0.7, 0.4, 0.3], [0.2, 0.5, 0.8], [0.35, 0.6, 0.1]])
+    per = white_balance_stops(color, evs, "working", sh)
+    np.testing.assert_allclose(white_balance_stops(color, evs, "working", sh, hue_preservation=0.0), per)
+    hue = white_balance_stops(color, evs, "working", sh, hue_preservation=1.0)
+    z = sh.stretch(color) * 2.0 ** (sh.strength * evs)
+    order = np.argsort(z, axis=1)
+    rows = np.arange(len(color))
+    lo, mid, hi = (order[:, k] for k in range(3))
+    np.testing.assert_allclose(hue[rows, hi], per[rows, hi], atol=1e-12)  # largest and smallest as per channel
+    np.testing.assert_allclose(hue[rows, lo], per[rows, lo], atol=1e-12)
+    place = (z[rows, mid] - z[rows, lo]) / (z[rows, hi] - z[rows, lo])  # middle keeps its place in stretched space
+    np.testing.assert_allclose(hue[rows, mid], hue[rows, lo] + place * (hue[rows, hi] - hue[rows, lo]), atol=1e-12)
+    half = white_balance_stops(color, evs, "working", sh, hue_preservation=0.5)
+    np.testing.assert_allclose(half, 0.5 * (per + hue), atol=1e-12)
+    ends = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    np.testing.assert_allclose(white_balance_stops(ends, evs, "bradford", sh, hue_preservation=0.5), ends, atol=1e-9)
+    with pytest.raises(ParameterError, match="hue_preservation"):
+        white_balance_stops(color, evs, "working", sh, hue_preservation=1.2)
+
+
 def test_per_channel_curves_still_act_per_channel():
     out = apply_curves(SATURATED, red=((0, 0), (128, 180), (255, 255)))
     np.testing.assert_allclose(out[:, 1:], SATURATED[:, 1:])

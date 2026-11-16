@@ -158,6 +158,33 @@ def test_shipped_white_balance_is_measured_in_bradford_cone_space():
     assert load().white_balance.space == "bradford"
 
 
+
+def test_exposure_shoulder_is_a_gain_between_stretch_and_rolloff():
+    sh = ExposureShoulder(shoulder=3.6, strength=0.9)
+    x = np.linspace(0.0, 0.999, 64)
+    np.testing.assert_allclose(sh.rolloff(sh.stretch(x)), x, atol=1e-9)
+    np.testing.assert_allclose(sh.apply(x, 1.5), sh.rolloff(sh.stretch(x) * 2.0 ** (0.9 * 1.5)), atol=1e-12)
+    assert sh.stretch(np.array([1.0]))[0] > 1e6 and sh.rolloff(np.array([1e12]))[0] == pytest.approx(1.0)
+
+
+def test_white_balance_hue_preservation_defaults_to_per_channel_and_must_be_a_fraction():
+    assert wb().hue_preservation == 0.0
+    assert WhiteBalanceResponse(wb().temperature, wb().tint, hue_preservation=0.5).hue_preservation == 0.5
+    for bad in (-0.1, 1.5):
+        with pytest.raises(ColorlabError, match="hue_preservation"):
+            WhiteBalanceResponse(wb().temperature, wb().tint, hue_preservation=bad)
+
+
+def test_white_balance_hue_preservation_round_trips_and_older_files_mean_per_channel():
+    d = load().to_dict()
+    assert Response.from_dict(d).white_balance.hue_preservation == d["white_balance"]["hue_preservation"]
+    del d["white_balance"]["hue_preservation"]
+    assert Response.from_dict(d).white_balance.hue_preservation == 0.0
+
+
+def test_shipped_white_balance_partly_preserves_hue():
+    assert 0.0 < load().white_balance.hue_preservation < 1.0
+
 # --- vibrance ------------------------------------------------------------------------------------
 
 def vib():

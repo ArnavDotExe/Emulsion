@@ -271,6 +271,25 @@ def test_measure_response_recovers_white_balance_stops_in_cone_space(tmp_path):
     np.testing.assert_allclose(got.tint[-100.0], [0.5, 0.0, 1.0], atol=0.05)
 
 
+
+def test_measure_response_recovers_white_balance_stops_with_partial_hue_preservation(tmp_path):
+    from colorlab import calibration as cal
+    truth = {"IncrementalTemperature": lambda a: np.array([0.016, 0.013, 0.0]) * a,
+             "IncrementalTint": lambda a: np.array([0.005, 0.0, 0.01]) * a}
+    wb = [v for v in VARIANTS if any(k.startswith("Incremental") and v.settings[k] != "0" for k in v.settings)]
+
+    def curve_for(v):
+        key = next(k for k in truth if v.settings[k] != "0")
+        evs = np.abs(truth[key](float(v.settings[key])))
+        return lambda x: cal._from_working(pipeline.white_balance_stops(
+            cal._to_working(x), evs, "bradford", hue_preservation=cal.WB_HUE_PRESERVATION))
+
+    got = measure_response(write_neutral_bakes(tmp_path / "luts", wb, curve_for)).response.white_balance
+    assert 0.0 < cal.WB_HUE_PRESERVATION < 1.0
+    assert got.hue_preservation == cal.WB_HUE_PRESERVATION
+    np.testing.assert_allclose(got.temperature[50.0], [0.8, 0.65, 0.0], atol=0.05)
+    np.testing.assert_allclose(got.tint[-100.0], [0.5, 0.0, 1.0], atol=0.05)
+
 def test_measure_response_recovers_vibrance(tmp_path, monkeypatch):
     shipped = response.load()
     amounts = (-100.0, -50.0, 50.0, 100.0)
