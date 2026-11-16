@@ -32,6 +32,10 @@ WORKING_TRANSFER = cs.Transfer.SRGB
 BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta")
 _BAND_CENTERS = np.array([0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0, 360.0])
 _LUMA = WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
+# Bradford cone responses from linear working RGB, each row scaled so white maps to (1, 1, 1)
+_CONES = cs._BRADFORD @ WORKING.rgb_to_xyz
+_CONES = _CONES / (_CONES @ np.ones(3))[:, None]
+_CONES_INV = np.linalg.inv(_CONES)
 
 #: measured shapes of white balance, exposure, the tone sliders, the parametric curve and vibrance;
 #: read from the shipped file on first use, so a broken file never stops ``calibration`` from
@@ -173,8 +177,31 @@ def white_balance(enc: np.ndarray, temperature: float = 0.0, tint: float = 0.0) 
     enc = _as_rgb(enc)
     if temperature == 0 and tint == 0:
         return enc
-    r = _response()
-    return r.exposure.apply(enc, r.white_balance.evs(temperature, tint))
+    wb = _response().white_balance
+    return white_balance_stops(enc, wb.evs(temperature, tint), wb.space)
+
+
+def white_balance_stops(enc: np.ndarray, evs: np.ndarray, space: str = "working",
+                        shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
+    """Per-channel stops ``evs`` on the exposure shoulder (default: the shipped one), in the
+    working space's channels or in Bradford cone space (``response.WB_SPACES``).
+
+    In cone space each pixel goes to linear cone responses (white = 1, 1, 1), is encoded with
+    the working curve (odd-symmetric, so slightly negative cones survive), gets its stops, and
+    comes back. Black and white stay put either way.
+    """
+    if space not in response.WB_SPACES:
+        raise ParameterError(f"white balance space {space!r} is not one of {', '.join(response.WB_SPACES)}")
+    enc = _as_rgb(enc)
+    evs = np.asarray(evs, dtype=np.float64)
+    if not np.any(evs):
+        return enc
+    shoulder = shoulder if shoulder is not None else _response().exposure
+    if space == "working":
+        return shoulder.apply(enc, evs)
+    cones = cs.encode(cs.decode(enc, WORKING_TRANSFER) @ _CONES.T, WORKING_TRANSFER)
+    moved = np.sign(cones) * shoulder.apply(np.minimum(np.abs(cones), 1.0), evs)
+    return cs.encode(cs.decode(moved, WORKING_TRANSFER) @ _CONES_INV.T, WORKING_TRANSFER)
 
 
 def exposure(enc: np.ndarray, ev: float) -> np.ndarray:

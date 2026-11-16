@@ -109,8 +109,9 @@ Lightroom quirks:
   pipeline) is done and calibrated against 143 single-slider bakes.
 - Accuracy against the user's 44 private presets: median ΔE2000 2.92, mean 4.13. Tone curves
   (exposure, contrast, whites/blacks, parametric, master curve) are applied hue-preservingly
-  (`pipeline.rgb_tone`); white balance and per-channel curves stay per channel.
-- All 147 calibration bakes are collected (mean 2.22 ΔE); no re-bake is pending.
+  (`pipeline.rgb_tone`); per-channel curves stay per channel. White balance is per-channel stops
+  in Bradford cone space (`pipeline.white_balance_stops`, `WhiteBalanceResponse.space`).
+- All 147 calibration bakes are collected (mean 1.94 ΔE); no re-bake is pending.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
     deterministic (repeat exports are bit-identical).
@@ -126,16 +127,17 @@ Lightroom quirks:
 - 6b has started. The spatial calibration kit is built (`out/spatial-kit`, 70 images) and is waiting
   for the user to export it from Lightroom. Next: `collect`, then measure each effect and model it.
 - Biggest single-slider gaps:
-  - Temperature −100 13.4, Temperature +100 6.3. Lightroom isn't purely per-channel on saturated colors.
-  - Exposure +2 4.9, Whites +100 4.2.
-  - Saturation −50 3.0. Saturation is still a formula and could be measured the same way.
-  - These gaps share a cause: colors pushed past 1. Our per-channel curves clip each channel and
-    shift hue, while Lightroom keeps hue and rolls bright saturated colors toward white. On those
-    bakes the error sits almost entirely in colors at 1: Exposure +2 is 6.8 there vs 3.1 elsewhere,
-    Whites +100 5.3 vs 1.2. A shared over-range/gamut-rolloff stage, fitted from the existing
-    bakes, is the next global fix.
-  - White balance as per-channel stops in Bradford cone space, fitted by ΔE, lowers the mean over
-    the 12 WB bakes from 3.88 to 3.01. Refit it after the over-range stage exists (`out/calib/wb_basis.py`).
+  - Temperature −100 11.5, Temperature +100 5.0, Tint ±100 4.1. The error sits in colors pushed
+    past 1: our white balance clips each channel, while Lightroom rolls bright saturated colors
+    toward white. A shared over-range/gamut-rolloff stage is the next global fix. After it, refit
+    white balance with `calibration response`.
+  - Color Grading Highlights/Shadows at S50 are 5.9–6.8, and Balance −50 is 4.8.
+  - Vibrance −100 is 4.9. Saturation −50 is 3.0; saturation is still a formula and could be
+    measured the same way.
+  - Since the hue-preserving tone, Exposure +2 is 1.8 and Whites +100 is 0.6.
+  - The white-balance refit traded colors (3.88 → 3.23 over the 12 bakes) against grays (gray ramp
+    1.45 → 1.37, but mid-gray Tint −100 is 0.032 off). `calibration._WB_GRAY_WEIGHT` sets
+    that balance.
 - Then:
   - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,
     noise reduction). The worst presets are dominated by these.

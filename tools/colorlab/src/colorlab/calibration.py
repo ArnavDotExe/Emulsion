@@ -46,6 +46,13 @@ K_BOUNDS: dict[str, tuple[float, float]] = {
     "K_MIXER": (0.0, 3.0),
 }
 
+#: channels the measured white balance moves (``response.WB_SPACES``): Bradford cones fit the
+#: Temperature/Tint bakes better than working-space RGB (mean CIEDE2000 3.01 vs 3.36 over 12 bakes)
+WB_SPACE = "bradford"
+#: weight of the gray-ramp error next to the color-grid error in the white-balance refine. Over the
+#: 12 bakes, 0 gives colors 3.02 / grays 2.32 dE; 1 gives 3.23 / 1.37 (working space was 3.88 / 1.45)
+_WB_GRAY_WEIGHT = 1.0
+
 _WB_KEYS = (("Temperature", "IncrementalTemperature", "IncrementalTint"),
             ("Tint", "IncrementalTint", "IncrementalTemperature"))
 
@@ -309,22 +316,79 @@ def _vibrance_tables(knots: np.ndarray, c: np.ndarray, bw: np.ndarray, d: np.nda
     return table, bands
 
 
-def _white_balance_stops(lut: Lut3D, shoulder: response.ExposureShoulder) -> np.ndarray:
-    """Stops per channel (R, G, B) that take a neutral ramp to the bake, on the exposure shoulder.
+def _wb_channels(enc: np.ndarray) -> np.ndarray:
+    """Working-encoded RGB as encoded Bradford cone responses (the white-balance channels)."""
+    lin = cs.decode(enc, pipeline.WORKING_TRANSFER) @ pipeline._CONES.T
+    return cs.encode(lin, pipeline.WORKING_TRANSFER)
 
-    Uses the median over ramp samples away from black, white and any clipped output; a channel
-    without any such sample is NaN (not measurable from this bake).
+
+def _nelder_mead(cost: Callable[[np.ndarray], float], x0: np.ndarray, step: float = 0.2,
+                 iters: int = 300, tol: float = 1e-5) -> tuple[np.ndarray, float]:
+    """Minimise ``cost`` from ``x0`` with a plain Nelder-Mead simplex."""
+    n = len(x0)
+    pts = [np.asarray(x0, dtype=np.float64)] + [x0 + step * np.eye(n)[i] for i in range(n)]
+    vals = [cost(q) for q in pts]
+    for _ in range(iters):
+        order = np.argsort(vals)
+        pts, vals = [pts[i] for i in order], [vals[i] for i in order]
+        if vals[-1] - vals[0] < tol:
+            break
+        c = np.mean(pts[:-1], axis=0)
+        xr = c + (c - pts[-1])
+        fr = cost(xr)
+        if fr < vals[0]:
+            xe = c + 2 * (c - pts[-1])
+            fe = cost(xe)
+            pts[-1], vals[-1] = (xe, fe) if fe < fr else (xr, fr)
+        elif fr < vals[-2]:
+            pts[-1], vals[-1] = xr, fr
+        else:
+            xc = c + 0.5 * (pts[-1] - c)
+            fc = cost(xc)
+            if fc < vals[-1]:
+                pts[-1], vals[-1] = xc, fc
+            else:
+                pts = [pts[0] + 0.5 * (q - pts[0]) for q in pts]
+                vals = [cost(q) for q in pts]
+    i = int(np.argmin(vals))
+    return pts[i], float(vals[i])
+
+
+def _white_balance_stops(lut: Lut3D, shoulder: response.ExposureShoulder, space: str = WB_SPACE,
+                         grid_size: int = 17) -> np.ndarray:
+    """Stops per white-balance channel (``space``) on the exposure shoulder for one bake.
+
+    Starts from the median over a neutral ramp, away from black, white and any clipped output
+    (a channel without such samples is NaN: not measurable from this bake), then refines all
+    three stops by mean CIEDE2000 over a ``grid_size``^3 sRGB grid plus the same over a gray
+    ramp (``_WB_GRAY_WEIGHT``), since Lightroom's white balance is only approximately
+    per-channel: colors alone would pull the neutrals off.
     """
     ramp = np.repeat(response.X[:, None], 3, axis=1)
     baked = apply_lut(lut, ramp).astype(np.float64)
     out = _to_working(baked)
+    if space == "bradford":
+        out = _wb_channels(out)
     stops = np.full(3, np.nan)
     for ch in range(3):
         ok = ((ramp[:, ch] > 0.02) & (ramp[:, ch] < 0.9) & (out[:, ch] > 0.005) & (out[:, ch] < 0.98)
               & np.all(baked < 1 - 1e-4, axis=1))
         if ok.any():
             stops[ch] = float(np.median(shoulder.stops(ramp[ok, ch], out[ok, ch])))
-    return np.round(stops, 4)
+    if np.isnan(stops).any():
+        return np.round(stops, 4)
+    grid = Lut3D.identity(grid_size).table.reshape(-1, 3).astype(np.float64)
+    grays = np.repeat(np.linspace(0.0, 1.0, 65)[:, None], 3, axis=1)
+    sets = [(_to_working(x), srgb_to_lab(apply_lut(lut, x).astype(np.float64)), w)
+            for x, w in ((grid, 1.0), (grays, _WB_GRAY_WEIGHT))]
+
+    def cost(evs: np.ndarray) -> float:
+        return sum(w * float(delta_e_2000(srgb_to_lab(_from_working(
+            pipeline.white_balance_stops(src, evs, space, shoulder))), lab_ref).mean())
+            for src, lab_ref, w in sets)
+
+    best, _ = _nelder_mead(cost, stops, step=0.1)
+    return np.round(best, 4)
 
 
 def _measure_vibrance(luts: Mapping[float, Lut3D], base: response.VibranceResponse) -> response.VibranceResponse:
@@ -413,20 +477,28 @@ def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS
         found = {float(v.settings[key]): luts[v.name] for v in variants
                  if v.name in luts and v.settings.get(partner) == "0" and float(v.settings.get(key, 0)) != 0}
         base_table = base.white_balance.temperature if key == "IncrementalTemperature" else base.white_balance.tint
+        if base.white_balance.space != WB_SPACE:
+            fallback = f"base stops are in {base.white_balance.space!r} channels, not {WB_SPACE!r}"
+        else:
+            fallback = ""
         if found:
             wb_tables[key] = {}
             for a, lut in found.items():
                 stops = _white_balance_stops(lut, exposure)
                 if np.isnan(stops).any():
                     lost = ", ".join("RGB"[ch] for ch in np.flatnonzero(np.isnan(stops)))
-                    report.warnings.append(f"{key} {a:+g}: no usable samples for {lost}; kept the base stops")
+                    report.warnings.append(f"{key} {a:+g}: no usable samples for {lost}; kept the base stops"
+                                           + (f" ({fallback})" if fallback else ""))
                     stops = np.where(np.isnan(stops), response._table_at(base_table, a), stops)
                 wb_tables[key][a] = stops
             report.measured.append(key)
         else:
             wb_tables[key] = base_table
             report.kept.append(key)
-    white_balance = response.WhiteBalanceResponse(wb_tables["IncrementalTemperature"], wb_tables["IncrementalTint"])
+            if fallback:
+                report.warnings.append(f"{key}: no bakes and the {fallback}; re-measure from a full set of bakes")
+    white_balance = response.WhiteBalanceResponse(wb_tables["IncrementalTemperature"], wb_tables["IncrementalTint"],
+                                                  space=WB_SPACE)
     report.response = response.Response(exposure=exposure, tone=tone, vibrance=vibrance, white_balance=white_balance)
     return report
 

@@ -37,6 +37,7 @@ TONE_KEYS = ("Contrast2012", "Whites2012", "Blacks2012",
              "ParametricShadows", "ParametricDarks", "ParametricLights", "ParametricHighlights")
 
 _CLIP_EPS = 1e-3  # a measured value this close to 0 or 1 counts as clipped
+WB_SPACES = ("working", "bradford")  # channels white-balance stops act on
 
 
 def _bracket(amounts: list[float], amount: float) -> tuple[float, float, float]:
@@ -149,16 +150,21 @@ def _table_at(table: Mapping[float, np.ndarray], amount: float) -> np.ndarray:
 
 @dataclass(frozen=True, eq=False)
 class WhiteBalanceResponse:
-    """Incremental temperature/tint as stops per channel (R, G, B) on the exposure shoulder.
+    """Incremental temperature/tint as stops per channel on the exposure shoulder.
 
     On a rendered image Lightroom brightens each channel along the same shoulder as
-    exposure, so white stays white. Temperature and tint add in stops.
+    exposure, so white stays white. Temperature and tint add in stops. ``space`` names the
+    channels: ``"working"`` (R, G, B of the working space) or ``"bradford"`` (the Bradford
+    cone responses, scaled so white is 1, 1, 1: a von Kries-style adaptation).
     """
 
     temperature: Mapping[float, np.ndarray]
     tint: Mapping[float, np.ndarray]
+    space: str = "working"
 
     def __post_init__(self) -> None:
+        if self.space not in WB_SPACES:
+            raise ColorlabError(f"white balance space {self.space!r} is not one of {', '.join(WB_SPACES)}")
         object.__setattr__(self, "temperature", _as_float_map(self.temperature, 3, "temperature stops"))
         object.__setattr__(self, "tint", _as_float_map(self.tint, 3, "tint stops"))
 
@@ -233,6 +239,7 @@ class Response:
                 "bands": table(self.vibrance.bands, 5),
             },
             "white_balance": {
+                "space": self.white_balance.space,
                 "temperature": table(self.white_balance.temperature, 5),
                 "tint": table(self.white_balance.tint, 5),
             },
@@ -252,7 +259,8 @@ class Response:
 
             vib, wb = data["vibrance"], data["white_balance"]
             return cls(
-                white_balance=WhiteBalanceResponse(table(wb["temperature"]), table(wb["tint"])),
+                white_balance=WhiteBalanceResponse(table(wb["temperature"]), table(wb["tint"]),
+                                                   space=wb.get("space", "working")),
                 exposure=ExposureShoulder(float(data["exposure"]["shoulder"]), float(data["exposure"]["strength"])),
                 tone={k: CurveFamily(table(data["tone"][k])) for k in TONE_KEYS},
                 vibrance=VibranceResponse(tuple(vib["chroma"]), tuple(vib["pivots"]),

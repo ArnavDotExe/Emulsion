@@ -266,6 +266,37 @@ White balance and per-channel point curves stay per channel.
   Whites +100 4.19 → 0.57; Parametric Lights +100 3.51 → 0.50.
 - Private presets: median 3.18 → 2.92, mean 4.39 → 4.13. The private regression bound is now ≤ 2.98 / ≤ 4.20.
 
+### White balance in Bradford cone space (`pipeline.white_balance_stops`)
+
+Journey: as a photographer, Temperature and Tint shift colors the way Lightroom does, not only
+grays. Per-channel stops in the working (ProPhoto) channels matched grays but missed saturated
+colors. A basis test over the 12 Temperature/Tint bakes, refitting the stops by ΔE in each
+basis, gave: ProPhoto 3.36, Rec.2020 3.11, free 3×3 matrix 3.30, Bradford cones 3.01.
+
+The stops now move Bradford cone responses, scaled so white is (1, 1, 1) (a von Kries-style
+adaptation), on the same exposure shoulder. `calibration response` starts from the gray-ramp
+median per cone, then refines all three stops by mean CIEDE2000 over a 17³ color grid plus a
+gray ramp at equal weight. On colors alone the neutrals drift: grays 2.32 ΔE.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | `WhiteBalanceResponse.space` defaults to `"working"`, rejects unknown spaces, round-trips, and older files read as working | `test_response.py`: `test_white_balance_space_defaults_to_working_and_rejects_unknown_spaces`, `test_white_balance_space_round_trips_and_older_files_mean_working` | PASS |
+| 2 | The shipped white balance is measured in Bradford cone space | `test_shipped_white_balance_is_measured_in_bradford_cone_space` | PASS |
+| 3 | Cone-space stops keep black and white, are the identity at zero, differ from working-space stops on colors, and reject unknown spaces | `test_pipeline.py::test_white_balance_stops_in_cone_space_keep_black_and_white_and_mix_channels_on_colors` | PASS |
+| 4 | `measure_response` recovers known cone-space stops from synthetic bakes | `test_calibration.py::test_measure_response_recovers_white_balance_stops_in_cone_space` | PASS |
+
+- RED `f467cf5`: 5 failed (no `space` field, no `white_balance_stops`).
+- GREEN: full suite (public and private) 367 passed, 98% coverage.
+- 12 WB bakes: colors 3.88 → 3.23 ΔE, gray ramp 1.45 → 1.37. Temperature −100 is 11.5; its
+  error sits in colors pushed past 1 (the over-range stage). All 147 bakes: 1.99 → 1.94.
+- Two older guarantees loosened, both to tiny or local amounts:
+  - Per-channel monotonicity on grays now allows −1e-5. The cone mix wiggles by 2.5e-6 near
+    white at Temperature −100, where the S cone has clipped.
+  - The mid-gray Lightroom match is now atol 0.035, up from 0.03: Tint −100's red is 0.032 off
+    there (1.2 ΔE). The gray ramp as a whole is better than before.
+- Private presets: unchanged at median 2.92 / mean 4.13, since few of them use incremental
+  Temperature/Tint.
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one
