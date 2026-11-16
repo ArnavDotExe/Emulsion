@@ -72,7 +72,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `adobe_table` | Lightroom `crs:Table_*` RGBTable decode/encode/apply |
 | `preset` | `.xmp` / mobile `.dng` presets → typed `Preset`, look resolution |
 | `pipeline` | Reference model of a preset's global color in Lightroom order; `render()`, `render_lut()` |
-| `response` | Lightroom's **measured** slider shapes (exposure shoulder, white-balance stops per channel, tone and parametric curves per amount, vibrance gains), stored in `data/lightroom_response.json` |
+| `response` | Lightroom's **measured** slider shapes (exposure shoulder, white-balance stops per Bradford cone, tone and parametric curves per amount, vibrance gains), stored in `data/lightroom_response.json` |
 | `calibration` | 147 single-slider calibration presets; `response` measures shapes from bakes, `fit` fits the remaining `K_*` strengths |
 | `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `collect` checks and copies the exports |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
