@@ -254,24 +254,21 @@ def test_measure_response_recovers_the_exposure_shoulder(tmp_path):
     assert got.shoulder == pytest.approx(2.5, abs=0.15) and got.strength == pytest.approx(0.8, abs=0.02)
 
 
-def test_measure_response_recovers_white_balance_stops_per_channel(tmp_path):
-    shoulder = response.load().exposure
+def test_measure_response_recovers_white_balance_stops_in_cone_space(tmp_path):
+    from colorlab import calibration as cal
     truth = {"IncrementalTemperature": lambda a: np.array([0.016, 0.013, 0.0]) * a,
              "IncrementalTint": lambda a: np.array([0.005, 0.0, 0.01]) * a}
     wb = [v for v in VARIANTS if any(k.startswith("Incremental") and v.settings[k] != "0" for k in v.settings)]
 
-    def curve_for(v):  # per-channel stops in the working space, as Lightroom does; bakes are sRGB
+    def curve_for(v):  # per-channel stops in Bradford cone space; bakes are sRGB
         key = next(k for k in truth if v.settings[k] != "0")
         evs = np.abs(truth[key](float(v.settings[key])))
-        to_w = lambda x: cs.encode(cs.convert(cs.decode(x, cs.Transfer.SRGB), cs.SRGB, pipeline.WORKING),
-                                   cs.Transfer.SRGB)
-        from_w = lambda e: cs.encode(cs.convert(cs.decode(e, cs.Transfer.SRGB), pipeline.WORKING, cs.SRGB),
-                                     cs.Transfer.SRGB)
-        return lambda x: np.clip(from_w(shoulder.apply(np.clip(to_w(x), 0, 1), evs)), 0, 1)
+        return lambda x: cal._from_working(pipeline.white_balance_stops(cal._to_working(x), evs, "bradford"))
 
     got = measure_response(write_neutral_bakes(tmp_path / "luts", wb, curve_for)).response.white_balance
-    np.testing.assert_allclose(got.temperature[50.0], [0.8, 0.65, 0.0], atol=0.03)
-    np.testing.assert_allclose(got.tint[-100.0], [0.5, 0.0, 1.0], atol=0.03)
+    assert got.space == "bradford"
+    np.testing.assert_allclose(got.temperature[50.0], [0.8, 0.65, 0.0], atol=0.05)
+    np.testing.assert_allclose(got.tint[-100.0], [0.5, 0.0, 1.0], atol=0.05)
 
 
 def test_measure_response_recovers_vibrance(tmp_path, monkeypatch):

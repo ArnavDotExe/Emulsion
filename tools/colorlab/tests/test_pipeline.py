@@ -458,6 +458,18 @@ def test_hue_preserving_tone_still_maps_neutrals_through_the_curve():
     np.testing.assert_allclose(exposure(gray, 1.0)[0, 0], exposure(np.array([[0.4, 0.1, 0.0]]), 1.0)[0, 0])
 
 
+def test_white_balance_stops_in_cone_space_keep_black_and_white_and_mix_channels_on_colors():
+    from colorlab.pipeline import white_balance_stops
+    evs = np.array([0.8, 0.6, 0.0])
+    ends = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    np.testing.assert_allclose(white_balance_stops(ends, evs, "bradford"), ends, atol=1e-9)
+    color = np.array([[0.2, 0.5, 0.8], [0.7, 0.3, 0.2]])
+    np.testing.assert_allclose(white_balance_stops(color, np.zeros(3), "bradford"), color, atol=1e-9)
+    assert np.abs(white_balance_stops(color, evs, "bradford") - white_balance_stops(color, evs, "working")).max() > 1e-3
+    with pytest.raises(ValueError, match="space"):
+        white_balance_stops(color, evs, "lab")
+
+
 def test_per_channel_curves_still_act_per_channel():
     out = apply_curves(SATURATED, red=((0, 0), (128, 180), (255, 255)))
     np.testing.assert_allclose(out[:, 1:], SATURATED[:, 1:])

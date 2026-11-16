@@ -140,6 +140,24 @@ def test_white_balance_rejects_bad_tables():
         WhiteBalanceResponse(temperature={50.0: np.array([1.0, 2.0])}, tint={50.0: np.zeros(3)})
 
 
+def test_white_balance_space_defaults_to_working_and_rejects_unknown_spaces():
+    assert wb().space == "working"
+    assert WhiteBalanceResponse(wb().temperature, wb().tint, space="bradford").space == "bradford"
+    with pytest.raises(ColorlabError, match="space"):
+        WhiteBalanceResponse(wb().temperature, wb().tint, space="lab")
+
+
+def test_white_balance_space_round_trips_and_older_files_mean_working():
+    d = load().to_dict()
+    assert Response.from_dict(d).white_balance.space == d["white_balance"]["space"]
+    del d["white_balance"]["space"]
+    assert Response.from_dict(d).white_balance.space == "working"
+
+
+def test_shipped_white_balance_is_measured_in_bradford_cone_space():
+    assert load().white_balance.space == "bradford"
+
+
 # --- vibrance ------------------------------------------------------------------------------------
 
 def vib():
