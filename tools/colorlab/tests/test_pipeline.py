@@ -274,15 +274,14 @@ def test_hsl_hue_and_luminance_move_the_right_way():
 def scene_color(hue_deg, sat=0.6, value=0.5):
     """A working-encoded color whose hexcone hue on the HSL stage's scene scale is ``hue_deg``."""
     import colorsys
-    from colorlab.pipeline import K_SCENE, _response
-    rgb = np.array(colorsys.hsv_to_rgb(hue_deg / 360, sat, value))
-    return _response().exposure.rolloff(rgb / K_SCENE)
+    from colorlab.pipeline import K_SCENE
+    return unscene(np.array(colorsys.hsv_to_rgb(hue_deg / 360, sat, value)) / K_SCENE)
 
 
 def scene_hsv(enc):
     import colorsys
-    from colorlab.pipeline import K_SCENE, _response
-    h, s, v = colorsys.rgb_to_hsv(*(_response().exposure.stretch(np.asarray(enc, dtype=np.float64)) * K_SCENE))
+    from colorlab.pipeline import K_SCENE
+    h, s, v = colorsys.rgb_to_hsv(*(scene(enc) * K_SCENE))
     return h * 360, s, v
 
 
@@ -327,6 +326,18 @@ def test_hsl_luminance_keeps_the_scene_hue_and_moves_the_right_way():
     assert down[2] < v0 < up[2]
 
 
+def test_scene_scale_keeps_the_hue_of_linear_values():
+    import colorsys
+    from colorlab.pipeline import WORKING_TRANSFER, _from_scene, _to_scene
+    enc = np.random.default_rng(5).random((400, 3))
+    hue = lambda rgb: np.array([colorsys.rgb_to_hsv(*c)[0] for c in rgb])
+    lin = cs.decode(enc, WORKING_TRANSFER)
+    d = (hue(_to_scene(enc)) - hue(lin) + 0.5) % 1.0 - 0.5
+    np.testing.assert_allclose(d, 0, atol=1e-9)
+    np.testing.assert_allclose(_to_scene(enc), scene(enc), rtol=1e-9)
+    np.testing.assert_allclose(_from_scene(_to_scene(enc)), enc, atol=1e-9)
+
+
 def test_hsl_models_round_trip():
     from colorlab.pipeline import _from_mmh, _to_mmh
     x = np.random.default_rng(3).random((500, 3))
@@ -359,6 +370,19 @@ HSL_SAMPLES = np.array([[0.35, 0.4, 0.55], [0.6, 0.5, 0.3], [0.55, 0.45, 0.42], 
 ])
 def test_render_hsl_matches_lightroom(settings, expected):
     np.testing.assert_allclose(render(parse_preset(make_xmp(settings)), HSL_SAMPLES), expected, atol=0.015)
+
+
+# Lightroom bakes at saturated colors (sRGB in and out, Lightroom's output inside sRGB): a per-channel
+# scene scale bends these colors' hue; Lightroom keeps the hue of the linear values
+@pytest.mark.parametrize("settings,rgb,expected,tol", [
+    ({"LuminanceAdjustmentBlue": "-100"}, [0.35, 0.2, 0.8], [0.193, 0.022, 0.537], 0.025),
+    ({"Saturation": "+50"}, [0.2, 0.3, 0.9], [0.092, 0.269, 0.976], 0.015),
+    ({"Saturation": "+50"}, [0.35, 0.2, 0.8], [0.354, 0.123, 0.89], 0.015),
+    ({"HueAdjustmentBlue": "-100"}, [0.3, 0.75, 0.8], [0.151, 0.828, 0.735], 0.005),
+])
+def test_render_matches_lightroom_on_saturated_colors(settings, rgb, expected, tol):
+    out = render(parse_preset(make_xmp(settings)), np.array([rgb]))[0]
+    np.testing.assert_allclose(out, expected, atol=tol)
 
 
 def test_hsl_rejects_unknown_band():
@@ -506,9 +530,20 @@ def test_vibrance_minus_100_keeps_some_color():
 
 
 def scene(enc):
-    """Working values on the exposure shoulder's stretched (scene-linear) scale."""
-    from colorlab.pipeline import _response
-    return _response().exposure.stretch(np.asarray(enc, dtype=np.float64))
+    """Working values on the scene-linear scale: the exposure shoulder's stretch applied the way
+    Lightroom's tone curve is, to each color's min and max with the middle channel kept in place,
+    so a color's hexcone hue is that of its linear values."""
+    from colorlab.pipeline import WORKING_TRANSFER, _response, rgb_tone
+    sh = _response().exposure
+    lin = cs.decode(np.asarray(enc, dtype=np.float64), WORKING_TRANSFER)
+    return rgb_tone(lin, lambda x: sh.stretch(cs.encode(np.maximum(x, 0.0), WORKING_TRANSFER)))
+
+
+def unscene(x):
+    from colorlab.pipeline import WORKING_TRANSFER, _response, rgb_tone
+    sh = _response().exposure
+    lin = rgb_tone(np.asarray(x, dtype=np.float64), lambda y: cs.decode(sh.rolloff(y), WORKING_TRANSFER))
+    return cs.encode(lin, WORKING_TRANSFER)
 
 
 def test_vibrance_keeps_hue_on_the_scene_linear_scale_and_brightens_drained_blues():
