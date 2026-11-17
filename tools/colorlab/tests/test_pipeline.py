@@ -300,6 +300,75 @@ def test_highlight_tint_colors_lights_more_than_darks():
     assert li[0] > li[2] and chroma(li) > chroma(color_grade(dark, highlights=orange))
 
 
+# Lightroom bakes of the calibration presets (sRGB in and out): grays 0.1, 0.46, 0.8 and one red
+GRADE_SAMPLES = np.array([[0.1] * 3, [0.46] * 3, [0.8] * 3, [0.8, 0.3, 0.2]])
+
+
+@pytest.mark.parametrize("settings,expected", [
+    ({"SplitToningShadowHue": "240", "SplitToningShadowSaturation": "50"},
+     [[0.073, 0.1, 0.168], [0.412, 0.46, 0.602], [0.791, 0.8, 0.831], [0.79, 0.3, 0.339]]),
+    ({"SplitToningHighlightHue": "0", "SplitToningHighlightSaturation": "50"},
+     [[0.104, 0.099, 0.099], [0.6, 0.408, 0.432], [1.0, 0.721, 0.758], [0.958, 0.17, 0.193]]),
+    ({"ColorGradeMidtoneHue": "120", "ColorGradeMidtoneSat": "50"},
+     [[0.098, 0.102, 0.099], [0.319, 0.529, 0.395], [0.765, 0.819, 0.781], [0.722, 0.381, 0.17]]),
+    ({"ColorGradeGlobalLum": "+50"},
+     [[0.116, 0.116, 0.116], [0.503, 0.503, 0.503], [0.832, 0.832, 0.832], [0.851, 0.342, 0.228]]),
+    ({"ColorGradeShadowLum": "+50"},
+     [[0.155, 0.155, 0.155], [0.471, 0.471, 0.471], [0.802, 0.802, 0.802], [0.801, 0.326, 0.251]]),
+    ({"SplitToningShadowHue": "240", "SplitToningShadowSaturation": "50", "SplitToningBalance": "-50"},
+     [[0.073, 0.1, 0.168], [0.401, 0.46, 0.625], [0.781, 0.8, 0.867], [0.79, 0.3, 0.34]]),
+    ({"SplitToningShadowHue": "240", "SplitToningShadowSaturation": "50", "ColorGradeBlending": "0"},
+     [[0.077, 0.1, 0.162], [0.459, 0.46, 0.463], [0.8, 0.8, 0.8], [0.794, 0.3, 0.296]]),
+])
+def test_render_color_grading_matches_lightroom(settings, expected):
+    np.testing.assert_allclose(render(parse_preset(make_xmp(settings)), GRADE_SAMPLES), expected, atol=0.002)
+
+
+@pytest.mark.parametrize("kw", [
+    {"shadows": Zone(hue=240, sat=50)},
+    {"highlights": Zone(hue=0, sat=50)},
+    {"midtones": Zone(hue=120, sat=80)},
+    {"global_": Zone(hue=60, sat=30)},
+    {"shadows": Zone(hue=200, sat=100), "highlights": Zone(hue=30, sat=100), "balance": -80, "blending": 0},
+])
+def test_color_grade_tints_keep_black_and_white(kw):
+    out = color_grade(GRAYS, **kw)
+    np.testing.assert_allclose(out[[0, -1]], GRAYS[[0, -1]], atol=1e-9)
+
+
+@pytest.mark.parametrize("kw", [
+    {"shadows": Zone(hue=240, sat=50, lum=100)},
+    {"highlights": Zone(hue=0, sat=50, lum=-100)},
+    {"midtones": Zone(hue=120, sat=80, lum=30), "global_": Zone(hue=60, sat=30, lum=-50)},
+    {"shadows": Zone(hue=200, sat=100, lum=60), "highlights": Zone(hue=30, sat=100), "balance": -80, "blending": 0},
+])
+def test_color_grade_is_monotonic_per_channel_and_luminance_moves_the_ends_like_lightroom(kw):
+    out = color_grade(GRAYS, **kw)
+    assert np.all(np.diff(out, axis=0) > 0)
+    if kw.get("shadows", Zone()).lum > 0:
+        assert np.all(out[0] > 0)  # Lightroom's shadow luminance lifts black
+    if kw.get("highlights", Zone()).lum < 0:
+        assert np.all(out[-1] < 1)  # and highlight luminance dims white
+
+
+def test_color_grade_passes_values_above_white_through_monotonically():
+    over = np.array([[1.0] * 3, [1.05] * 3, [1.1] * 3])
+    out = color_grade(over, shadows=Zone(hue=240, sat=50), midtones=Zone(hue=30, sat=40))
+    assert np.all(np.isfinite(out)) and np.all(np.diff(out, axis=0) > 0)
+
+
+def test_legacy_split_toning_without_blending_renders_as_blending_100():
+    # Measured: Lightroom reads an XMP that has SplitToning* keys but no ColorGradeBlending as
+    # legacy split toning (Blending 100); presets written with ColorGrade* keys default to 50.
+    def r(settings):
+        return render(parse_preset(make_xmp(settings)), GRADE_SAMPLES)
+    legacy = {"SplitToningShadowHue": "240", "SplitToningShadowSaturation": "50"}
+    np.testing.assert_allclose(r(legacy), r({**legacy, "ColorGradeBlending": "100"}), atol=1e-6)
+    assert np.abs(r(legacy) - r({**legacy, "ColorGradeBlending": "50"})).max() > 0.01
+    modern = {"ColorGradeShadowHue": "240", "ColorGradeShadowSat": "50"}
+    np.testing.assert_allclose(r(modern), r({**modern, "ColorGradeBlending": "50"}), atol=1e-6)
+
+
 def test_global_tint_reaches_every_tone_and_zone_luminance_brightens():
     mid = np.array([0.5] * 3)
     assert chroma(color_grade(mid, global_=Zone(hue=120, sat=40))) > 0.01

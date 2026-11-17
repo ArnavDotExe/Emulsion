@@ -141,19 +141,19 @@ def fake_lightroom(tmp_path, variants, **true_strengths):
 
 
 def test_fit_recovers_known_strengths(tmp_path):
-    variants = variants_fitting("K_GRADE_LUM") + variants_fitting("K_MIXER")
-    luts = fake_lightroom(tmp_path, variants, K_GRADE_LUM=0.2, K_MIXER=1.2)
+    variants = variants_fitting("K_LUMINANCE") + variants_fitting("K_MIXER")
+    luts = fake_lightroom(tmp_path, variants, K_LUMINANCE=0.6, K_MIXER=1.2)
     report = fit(luts, variants=variants, grid_size=9)
-    assert report.constants["K_GRADE_LUM"] == pytest.approx(0.2, rel=0.02)
+    assert report.constants["K_LUMINANCE"] == pytest.approx(0.6, rel=0.02)
     assert report.constants["K_MIXER"] == pytest.approx(1.2, rel=0.02)
     for v in variants:
         assert report.after[v.name] < 0.05 <= report.before[v.name]
 
 
 def test_fit_restores_the_pipeline_strengths(tmp_path):
-    variants = variants_fitting("K_GRADE_LUM")
+    variants = variants_fitting("K_LUMINANCE")
     before = {k: getattr(pipeline, k) for k in K_BOUNDS}
-    fit(fake_lightroom(tmp_path, variants, K_GRADE_LUM=0.3), variants=variants, grid_size=9)
+    fit(fake_lightroom(tmp_path, variants, K_LUMINANCE=0.5), variants=variants, grid_size=9)
     assert {k: getattr(pipeline, k) for k in K_BOUNDS} == before
 
 
@@ -165,19 +165,25 @@ def test_fit_reports_missing_bakes_and_scores_unfitted_variants(tmp_path):
     assert all(report.after[v.name] < 0.05 for v in exposure)
 
 
+def test_color_grading_is_reconstructed_not_fitted():
+    assert not hasattr(pipeline, "K_GRADE_SAT") and not hasattr(pipeline, "K_GRADE_LUM")
+    grade = [v for v in VARIANTS if v.name.startswith("Cal Grade")]
+    assert len(grade) == 24 and all(not v.fits for v in grade)  # the bakes stay as accuracy checks
+
+
 # --- command line ------------------------------------------------------------------------------------
 
 def test_cli_presets_and_fit(tmp_path, capsys):
     assert main(["presets", str(tmp_path / "cal")]) == 0
     assert f"wrote {len(VARIANTS)} calibration preset" in capsys.readouterr().out
     (tmp_path / "luts").mkdir()
-    luts = fake_lightroom(tmp_path / "luts", variants_fitting("K_GRADE_LUM"), K_GRADE_LUM=0.25)
+    luts = fake_lightroom(tmp_path / "luts", variants_fitting("K_LUMINANCE"), K_LUMINANCE=0.55)
     out_json = tmp_path / "fit.json"
     assert main(["fit", str(luts), "--grid", "9", "--json", str(out_json)]) == 0
     text = capsys.readouterr().out
-    assert "K_GRADE_LUM = 0.25" in text and f"missing {len(VARIANTS) - len(variants_fitting('K_GRADE_LUM'))}" in text
+    assert "K_LUMINANCE = 0.55" in text and f"missing {len(VARIANTS) - len(variants_fitting('K_LUMINANCE'))}" in text
     data = json.loads(out_json.read_text(encoding="utf-8"))
-    assert data["constants"]["K_GRADE_LUM"] == pytest.approx(0.25, rel=0.02)
+    assert data["constants"]["K_LUMINANCE"] == pytest.approx(0.55, rel=0.02)
 
 
 def test_cli_fit_without_any_bakes_fails(tmp_path, capsys):
