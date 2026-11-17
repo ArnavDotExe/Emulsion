@@ -162,6 +162,8 @@ Lightroom quirks:
     Exposure ±2 is 0.8–0.9.
   - HSL is at most 0.67 (Lum Green −100), and B&W at most 0.46 (Mix Green +100).
   - `calibration._WB_GRAY_WEIGHT` sets the white-balance fit's balance of colors against grays.
+- darktable (GPL-3.0-or-later) was studied for 6b and the camera: `docs/study/darktable.md` ranks
+  reuse candidates (spektrafilm halation and grain, local Laplacian, dark channel + guided filter).
 - Then:
   - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,
     noise reduction). The worst presets are dominated by these.
