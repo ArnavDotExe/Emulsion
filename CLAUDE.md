@@ -80,7 +80,8 @@ pytest --cov --ignore=tests/private  # what CI runs
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
 saturation, vibrance + HSL (or B&W), then tone, parametric, point curves, profile table and color grading.
-Saturation, vibrance and HSL work on the exposure shoulder's stretched (scene-linear) scale. White
+Saturation, vibrance and HSL work on scene-linear values: the exposure shoulder's stretch, applied
+hue-preservingly (min and max mapped, middle kept in place; `pipeline._to_scene`). White
 balance and exposure are stops on one shared highlight shoulder: per channel for white balance, so
 white stays white. Neutral grays pass through unchanged between sRGB and the working space, so a
 bake's neutral ramp *is* Lightroom's tone curve.
@@ -109,7 +110,7 @@ Lightroom quirks:
 
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
-- Accuracy against the user's 44 private presets: median ΔE2000 1.14, mean 1.67. Tone curves
+- Accuracy against the user's 44 private presets: median ΔE2000 0.88, mean 1.40. Tone curves
   (exposure, contrast, whites/blacks, parametric, master curve) are applied hue-preservingly
   (`pipeline.rgb_tone`); per-channel curves stay per channel. White balance is per-channel stops
   in Bradford cone space (`pipeline.white_balance_stops`, `WhiteBalanceResponse.space`), with
@@ -121,16 +122,19 @@ Lightroom quirks:
   the look's settings, the app bakes them into the look's 3D LUT, at no per-frame cost. Split-toning
   keys without `ColorGradeBlending` mean Blending 100.
 - Saturation (a luminance-keeping opponent matrix) and vibrance (a min/max kernel that keeps hue)
-  are reconstructed too, on the stretched scale: Saturation bakes 1.05, Vibrance 0.79. Moving them,
+  are reconstructed too, on the scene scale: Saturation bakes 0.43, Vibrance 0.56. Moving them,
   HSL and B&W before the tone curve, as Lightroom orders them, took the presets from median 2.53 to 1.63.
 - HSL is reconstructed (`pipeline.hsl_adjust`):
   - Vibrance and the eight bands run as one stage on scene min/max/hexcone hue.
   - Band centers are 0/30/55/95/160/230/275/330°, with linear tables (monotone splines and a
     smooth hue model from `ProcessVersion` 15.4).
   - Hue moves at most max(0.9 × gap, 30°).
-  - One fitted scale, `K_SCENE` = 0.145, replaced `K_HUE`, `K_LUMINANCE` and `K_VIBRANCE`.
-  - Results: HSL bakes 1.83 → 0.57, presets median 1.63 → 1.14 and mean 3.45 → 1.67.
-- All 147 calibration bakes are collected (mean 0.82 ΔE); no re-bake is pending.
+  - One fitted scale, `K_SCENE` = 0.141, replaced `K_HUE`, `K_LUMINANCE` and `K_VIBRANCE`.
+  - HSL bakes 0.11 (hue 0.008); presets median 0.88 and mean 1.40.
+- ProPhoto exports of all 147 bakes are in `out/cal-exports-prophoto` (16-bit, gamma 1.8). They
+  show that Lightroom's sRGB export is a plain clip of its ProPhoto result (0.006 ΔE), with no
+  gamut mapping, and they keep out-of-sRGB colors for checking the model.
+- All 147 calibration bakes are collected (mean 0.65 ΔE); no re-bake is pending.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
     deterministic (repeat exports are bit-identical).
@@ -149,10 +153,10 @@ Lightroom quirks:
   - Temperature −100 5.9, Temperature +100 3.1, Tint ±100 2.5–3.0 (the 12 WB bakes are 2.08,
     with a gray ramp of 0.88). The planned over-range stage was disproved: the clip matches
     Lightroom, and the error was channel mixing, now fixed by the hue preservation.
-  - Saturation +100 1.6 and Vibrance −100 1.7; strong saturation that leaves sRGB gamut differs most.
+  - Vibrance −100 1.5 and Saturation +100 0.6.
   - Since the hue-preserving tone, Exposure +2 is 1.8 and Whites +100 is 0.6.
   - B&W Mix +100 (3.0–4.4 per band; the mixer is still a fitted formula, `K_MIXER`). HSL is at
-    most 2.05 (Hue Blue −100), almost all of it from colors pushed out of sRGB gamut.
+    most 0.67 (Lum Green −100).
   - `calibration._WB_GRAY_WEIGHT` sets the white-balance fit's balance of colors against grays.
 - Then:
   - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,

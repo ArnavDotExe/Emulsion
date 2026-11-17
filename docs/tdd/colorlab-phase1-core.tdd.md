@@ -487,6 +487,46 @@ What Lightroom does, now in `pipeline.hsl_adjust`:
 - Known gap: colors pushed out of sRGB gamut. In Hue Blue −100 (2.05), in-gamut samples are
   0.41 and out-of-gamut ones 7.4.
 
+## A hue-preserving scene scale, measured from ProPhoto exports
+
+Journey: as the maintainer, I want to know whether the HSL error that was left (Hue Blue −100
+2.05, nearly all of it in colors pushed outside sRGB) is our model or Lightroom's export, so I
+fix the right thing.
+
+The user re-exported all 147 calibration bakes as 16-bit ProPhoto RGB TIFFs
+(`out/cal-exports-prophoto`; ICC: ProPhoto, D50, pure gamma 1.8). Ten names came twice (`-2`): the
+redo-kit copies. Each pair was resolved by which one matches the collected sRGB bake.
+- Lightroom's sRGB export is its ProPhoto result converted and clipped: 0.006 ΔE over all 147
+  bakes. There is no gamut mapping, so our final clip already matches.
+- So the error was ours. Saturation and brightness of the min and max matched, but saturated
+  colors' hue was off.
+- Hue bakes against the ProPhoto exports, by the domain the hue is measured in: per-channel
+  stretch 0.60, sRGB-encoded 0.95, gamma 1.8 0.72, **linear 0.008**.
+- Band saturation and luminance still need the stretched scale (on linear values Saturation −100
+  grays bright colors too dark). Both hold if the stretch is hue-preserving: it maps each color's
+  min and max and keeps the middle in place, like Lightroom's tone curve (`rgb_tone`). Hue is then
+  that of the linear values.
+- `pipeline._to_scene` / `_from_scene` do this for saturation, vibrance and HSL. `K_SCENE`
+  refitted to 0.141.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | The scene scale keeps the hue of linear values and inverts exactly | `test_pipeline.py::test_scene_scale_keeps_the_hue_of_linear_values` | PASS |
+| 2 | Band-center, fall-off, gray and luminance properties hold on that scale | `test_hsl_*` (helpers `scene`/`unscene` now hue-preserving) | PASS |
+| 3 | Four saturated-color Lightroom fixtures (Lum Blue −100, Saturation +50 twice, Hue Blue −100) | `test_render_matches_lightroom_on_saturated_colors` | PASS |
+| 4 | All 16 hue bakes within 0.05 of Lightroom's ProPhoto exports (local) | `tests/private/test_hsl_vs_prophoto_exports.py` | PASS |
+| 5 | HSL bakes under 0.16, each under 0.8; Saturation under 0.50, Vibrance under 0.62; presets median ≤ 0.95, mean ≤ 1.45 (local) | `tests/private/` | PASS |
+
+- RED `0738d3f`: 13 public tests failed. Band centers were 10–16° off on saturated colors,
+  fixtures up to 0.167 off, and `_from_scene` was missing. Private: ProPhoto Hue Red −100 0.38,
+  presets median 1.14, Saturation 1.05.
+- GREEN: 421 pass (411 public), coverage 98%.
+- HSL bakes 0.57 → 0.11 (Hue 0.008, Sat 0.09, Lum 0.24); Saturation 1.05 → 0.43; Vibrance
+  0.79 → 0.56; all 147 bakes 0.82 → 0.65.
+- Private presets: median 1.14 → 0.88, mean 1.67 → 1.40.
+- Left: luminance wants a slightly smaller scale (about 0.13) than vibrance (about 0.2); worst
+  HSL bake Lum Green −100 0.67.
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one

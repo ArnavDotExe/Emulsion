@@ -55,7 +55,7 @@ def _response() -> response.Response:
 K_MIXER = 1.55  # B&W mixer strength at slider 100 (2026-11-15)
 #: the HSL stage's unit on the stretched (scene-linear) scale: vibrance and the band luminance and
 #: saturation taper as a channel nears 1 in this unit (fitted to the HSL and Vibrance bakes)
-K_SCENE = 0.145  # 2026-11-17, all 147 bakes
+K_SCENE = 0.141  # 2026-11-18, all 147 bakes
 
 Curve = Sequence[tuple[float, float]]
 
@@ -318,8 +318,8 @@ def hsl_adjust(enc: np.ndarray, hue: Mapping[str, float] | None = None,
                vibrance: float = 0.0, smooth: bool = False) -> np.ndarray:
     """Vibrance, then per-band hue, saturation and luminance (all -100..100), as Lightroom's HSL.
 
-    Runs on scene-linear values (the exposure shoulder's stretched scale, in units of
-    ``K_SCENE``), split into each color's smallest and largest channel and its hexcone hue. A
+    Runs on scene-linear values (see :func:`_to_scene`, in units of ``K_SCENE``), split into
+    each color's smallest and largest channel and its hexcone hue. A
     band's settings fade linearly from its center to the neighbouring centers; ``smooth``
     (process version 15.4 and later) fades them along a monotone spline instead and splits colors
     with the smooth hue model. Hue moves a color toward the neighbouring band, by at most 90% of
@@ -332,8 +332,7 @@ def hsl_adjust(enc: np.ndarray, hue: Mapping[str, float] | None = None,
     enc = _as_rgb(enc)
     if not (vibrance or hv.any() or sv.any() or lv.any()):
         return enc
-    shoulder = _response().exposure
-    lo, hi, h, gap = _to_mmh(shoulder.stretch(enc) * K_SCENE, smooth)
+    lo, hi, h, gap = _to_mmh(_to_scene(enc) * K_SCENE, smooth)
     if vibrance:
         lo, hi = _vibrance(lo, hi, h, vibrance / 100)
         gap = hi - lo
@@ -342,7 +341,27 @@ def hsl_adjust(enc: np.ndarray, hue: Mapping[str, float] | None = None,
         if hue_table[0] < 0:
             hue_table = hue_table + 6.0
         lo, hi, h = _tune_bands(lo, hi, h, gap, hue_table, _band_table(sv, smooth), _band_table(lv, smooth))
-    return shoulder.rolloff(_from_mmh(lo, hi, h, smooth) / K_SCENE)
+    return _from_scene(_from_mmh(lo, hi, h, smooth) / K_SCENE)
+
+
+def _to_scene(enc: np.ndarray) -> np.ndarray:
+    """Working-encoded values -> the scene-linear values Lightroom's color sliders work on.
+
+    The exposure shoulder's stretch, applied as Lightroom applies its tone curve: to each color's
+    largest and smallest channel, with the middle one kept in place (:func:`rgb_tone`). So a
+    color's hexcone hue stays that of its linear values; stretching each channel on its own
+    would bend the hue of saturated colors.
+    """
+    stretch = _response().exposure.stretch
+    return rgb_tone(cs.decode(enc, WORKING_TRANSFER),
+                    lambda x: stretch(cs.encode(np.maximum(x, 0.0), WORKING_TRANSFER)))
+
+
+def _from_scene(scene: np.ndarray) -> np.ndarray:
+    """The inverse of :func:`_to_scene`."""
+    rolloff = _response().exposure.rolloff
+    lin = rgb_tone(np.maximum(scene, 0.0), lambda y: cs.decode(rolloff(y), WORKING_TRANSFER))
+    return cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
 
 
 #: hue (degrees) of each band's center, where its sliders have their full effect
@@ -628,8 +647,8 @@ def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: floa
                         smooth: bool = False) -> np.ndarray:
     """Global saturation, then vibrance (-100..100), on scene-linear values as Lightroom does.
 
-    Both run on the exposure shoulder's stretched scale (the scene-linear values Lightroom
-    recovers from a rendered image). Saturation scales the two opponent axes and keeps luminance.
+    Both run on scene-linear values (:func:`_to_scene`, the values Lightroom recovers from a
+    rendered image). Saturation scales the two opponent axes and keeps luminance.
     Vibrance, the first step of :func:`hsl_adjust`, rewrites each color's largest and smallest
     channel and keeps the middle one in place: it favours muted colors, spares skin hues when
     boosting, and keeps some color at -100.
@@ -637,10 +656,9 @@ def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: floa
     _check("saturation", saturation, -100, 100)
     enc = _as_rgb(enc)
     if saturation:
-        shoulder = _response().exposure
         s = (saturation + 100) / 100
         matrix = _OPPONENT_INV @ np.diag([1.0, s, s]) @ _OPPONENT
-        enc = shoulder.rolloff(np.maximum(shoulder.stretch(enc) @ matrix.T, 0.0))
+        enc = _from_scene(np.maximum(_to_scene(enc) @ matrix.T, 0.0))
     return hsl_adjust(enc, vibrance=vibrance, smooth=smooth)
 
 
