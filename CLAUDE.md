@@ -107,14 +107,18 @@ Lightroom quirks:
 
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
-- Accuracy against the user's 44 private presets: median ΔE2000 2.90, mean 4.12. Tone curves
+- Accuracy against the user's 44 private presets: median ΔE2000 2.53, mean 4.03. Tone curves
   (exposure, contrast, whites/blacks, parametric, master curve) are applied hue-preservingly
   (`pipeline.rgb_tone`); per-channel curves stay per channel. White balance is per-channel stops
   in Bradford cone space (`pipeline.white_balance_stops`, `WhiteBalanceResponse.space`), with
   measured hue preservation per amount (`WhiteBalanceResponse.temperature_hue`/`tint_hue`): each
   pixel's middle channel is partly placed between its largest and smallest, so saturated colors
   don't mix.
-- All 147 calibration bakes are collected (mean 1.84 ΔE); no re-bake is pending.
+- Color grading is reconstructed, not fitted (`pipeline.grade_curves`): three per-channel 1-D curves
+  on linear working values, matching all 24 grading bakes to 0.007 ΔE. Since they depend only on
+  the look's settings, the app bakes them into the look's 3D LUT, at no per-frame cost. Split-toning
+  keys without `ColorGradeBlending` mean Blending 100.
+- All 147 calibration bakes are collected (mean 1.32 ΔE); no re-bake is pending.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
     deterministic (repeat exports are bit-identical).
@@ -133,10 +137,10 @@ Lightroom quirks:
   - Temperature −100 5.9, Temperature +100 3.1, Tint ±100 2.5–3.0 (the 12 WB bakes are 2.08,
     with a gray ramp of 0.88). The planned over-range stage was disproved: the clip matches
     Lightroom, and the error was channel mixing, now fixed by the hue preservation.
-  - Color Grading Highlights/Shadows at S50 are 5.9–6.8, and Balance −50 is 4.8.
   - Vibrance −100 is 4.9. Saturation −50 is 3.0; saturation is still a formula and could be
     measured the same way.
   - Since the hue-preserving tone, Exposure +2 is 1.8 and Whites +100 is 0.6.
+  - HSL at ±100 (Hue Blue 4.6, Sat Purple 4.3, Lum Green 4.2) and B&W Mix Yellow/Blue +100 (4.0–4.4).
   - `calibration._WB_GRAY_WEIGHT` sets the white-balance fit's balance of colors against grays.
 - Then:
   - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,

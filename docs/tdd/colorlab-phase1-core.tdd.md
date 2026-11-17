@@ -346,6 +346,48 @@ sliders set, the larger of the two applies, since no combined bakes measure the 
 - `calibration response` now takes about 2 minutes, since it runs 9 fits per white-balance bake.
 - The mid-gray Lightroom match is back to atol 0.03, from 0.035; the worst gray is now 0.023 off.
 
+### Color grading as per-channel curves (`pipeline.grade_curves`)
+
+Journey: as a photographer, a look's split toning (a converted preset's, or one of our own film
+looks) renders the way Lightroom renders it, and bakes into the look's 3D LUT so the camera pays
+nothing for it per frame. Emulsion is a camera, not an editor: grading only has to be faithful
+once baked, and the wheel sliders (hue, saturation and luminance per zone, plus Balance and
+Blending) stay as the vocabulary for authoring looks.
+
+The old stage added a fitted tint to luma-weighted zones (`K_GRADE_SAT`, `K_GRADE_LUM`) and
+scored 3.19 ΔE on the 24 Color Grading bakes. It is replaced by a reconstruction of Lightroom's
+behaviour. Color grading is three per-channel 1-D curves on linear working values, applied after
+the tone curves and the look table:
+
+- Each wheel's hue becomes per-channel factors of unit ProPhoto luminance, spread by saturation.
+- Shadows and highlights shape cubic zone curves split at a balance point (the sRGB-decoded
+  0.5 − 0.4 · Balance). Blending mixes the split toward one smooth curve.
+- Midtones and the global wheel bend each channel around its middle.
+- Zone luminance acts on the sRGB-encoded value. Shadow luminance lifts black (0.056 at +50 in
+  Lightroom's bake) and highlight luminance dims white, so only the tint wheels fix both ends.
+- Measured on the bakes: settings with `SplitToning*` keys but no `ColorGradeBlending` render
+  as Blending 100. `ColorGrade*`-only settings default to 50.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Shadow, highlight, midtone, global-luminance, shadow-luminance, Balance −50 and Blending 0 settings render gray 0.1/0.46/0.8 and a red as Lightroom's bakes do (atol 0.002) | `test_pipeline.py::test_render_color_grading_matches_lightroom` | PASS |
+| 2 | Tints keep black and white, including strong opposite tints at Balance −80, Blending 0 | `test_color_grade_tints_keep_black_and_white` | PASS |
+| 3 | Every channel's curve is increasing; shadow luminance lifts black and highlight luminance dims white | `test_color_grade_is_monotonic_per_channel_and_luminance_moves_the_ends_like_lightroom` | PASS |
+| 4 | Values above 1 keep their excess and stay increasing | `test_color_grade_passes_values_above_white_through_monotonically` | PASS |
+| 5 | Legacy split toning without a Blending key renders as Blending 100; `ColorGrade*` settings default to 50 | `test_legacy_split_toning_without_blending_renders_as_blending_100` | PASS |
+| 6 | No fitted grading strengths remain; the 24 grading bakes stay as accuracy checks | `test_calibration.py::test_color_grading_is_reconstructed_not_fitted` | PASS |
+| 7 | All 24 Color Grading bakes match under 0.05 ΔE (local) | `tests/private/test_grade_vs_bakes.py` | PASS |
+
+- RED `7d1230b`: 15 failed, 136 passed. The failures were the new fixtures and properties, the
+  legacy Blending rule, the removed constants and the private bake check. The `fit` tests that
+  used `K_GRADE_LUM` as their example strength now use `K_LUMINANCE`.
+- GREEN: the same 151 tests pass.
+- 24 grading bakes: 3.19 → 0.007 ΔE (max 0.009). All 147 bakes: 1.84 → 1.32.
+- Private presets: median 2.90 → 2.53, mean 4.12 → 4.03. 24 of the 50 XMP presets split-tone, and
+  all of them set Blending explicitly.
+- Running grading after Saturation instead of before changes nothing (presets 2.530/4.025 vs
+  2.530/4.026), so the stage order stays.
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one

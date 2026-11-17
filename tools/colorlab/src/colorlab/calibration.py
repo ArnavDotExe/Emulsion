@@ -41,8 +41,6 @@ CAL_GROUP = "FilmSim Calibration"
 K_BOUNDS: dict[str, tuple[float, float]] = {
     "K_HUE": (0.0, 1.0),
     "K_LUMINANCE": (0.0, 1.5),
-    "K_GRADE_SAT": (0.0, 1.0),
-    "K_GRADE_LUM": (0.0, 1.0),
     "K_MIXER": (0.0, 3.0),
 }
 
@@ -113,11 +111,11 @@ def _build() -> tuple[Variant, ...]:
              ("Global", "ColorGradeGlobalHue", "ColorGradeGlobalSat", "ColorGradeGlobalLum"))
     for label, hue_key, sat_key, lum_key in zones:
         for hue in (0, 120, 240):
-            out.append(Variant(f"Cal Grade {label} H{hue} S50", {hue_key: str(hue), sat_key: "50"}, fits=("K_GRADE_SAT",)))
-        out += _sweep(f"Grade {label} Lum", lum_key, (-50, 50), ("K_GRADE_LUM",))
+            out.append(Variant(f"Cal Grade {label} H{hue} S50", {hue_key: str(hue), sat_key: "50"}))
+        out += _sweep(f"Grade {label} Lum", lum_key, (-50, 50))
     blue_shadows = {"SplitToningShadowHue": "240", "SplitToningShadowSaturation": "50"}
-    out += _sweep("Grade Balance", "SplitToningBalance", (-50, 50), ("K_GRADE_SAT",), blue_shadows)
-    out += [Variant(f"Cal Grade Blending {v}", {**blue_shadows, "ColorGradeBlending": str(v)}, fits=("K_GRADE_SAT",))
+    out += _sweep("Grade Balance", "SplitToningBalance", (-50, 50), (), blue_shadows)
+    out += [Variant(f"Cal Grade Blending {v}", {**blue_shadows, "ColorGradeBlending": str(v)})
             for v in (0, 100)]
     mixer = {"ConvertToGrayscale": "True", **{f"GrayMixer{b.capitalize()}": "0" for b in BANDS}}
     out.append(Variant("Cal BW Neutral Mix", mixer))

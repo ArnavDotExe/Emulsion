@@ -53,8 +53,6 @@ def _response() -> response.Response:
 # to single-slider Lightroom bakes (2026-11-15, 143 bakes).
 K_HUE = 0.831  # fraction of the gap to the neighbouring band at hue 100
 K_LUMINANCE = 0.708
-K_GRADE_SAT = 0.231
-K_GRADE_LUM = 0.0868
 K_MIXER = 1.55
 
 Curve = Sequence[tuple[float, float]]
@@ -373,7 +371,13 @@ class Zone:
 
 def color_grade(enc: np.ndarray, shadows: Zone = Zone(), midtones: Zone = Zone(), highlights: Zone = Zone(),
                 global_: Zone = Zone(), blending: float = 50.0, balance: float = 0.0) -> np.ndarray:
-    """Color grading / split toning: tint and brighten tonal zones of the image."""
+    """Color grading / split toning: three per-channel tone curves on linear working values.
+
+    The wheels tint and brighten tonal zones the way Lightroom does (reconstructed, and matched
+    to its bakes to 0.01 dE on every wheel, luminance, balance and blending setting). Each
+    curve depends only on the settings, so a look bakes it once: into its 3D LUT, or as three
+    1-D textures. Values above 1 keep their excess.
+    """
     zones = tuple(z.check(n) for z, n in ((shadows, "shadows"), (midtones, "midtones"),
                                          (highlights, "highlights"), (global_, "global")))
     _check("blending", blending, 0, 100)
@@ -381,17 +385,128 @@ def color_grade(enc: np.ndarray, shadows: Zone = Zone(), midtones: Zone = Zone()
     enc = _as_rgb(enc)
     if all(z.neutral for z in zones):
         return enc
-    t = np.clip(enc @ _LUMA, 0.0, 1.0) ** (2.0 ** (-balance / 100))
-    p = 1 + 2 * (1 - blending / 100)
-    ws, wh = (1 - t) ** p, t ** p
-    weights = (ws, 1 - ws - wh, wh, np.ones_like(t))
-    out = enc.copy()
-    for zone, w in zip(zones, weights):
-        if zone.neutral:
-            continue
-        tint = K_GRADE_SAT * zone.sat / 100 * _shape(np.array(zone.hue)) + K_GRADE_LUM * zone.lum / 100
-        out = out + w[..., None] * tint
+    curves = grade_curves(shadows, midtones, highlights, global_, blending, balance)
+    lin = cs.decode(enc, WORKING_TRANSFER)
+    inside = np.clip(lin, 0.0, 1.0)
+    out = np.stack([curve(inside[..., c]) for c, curve in enumerate(curves)], axis=-1) + (lin - inside)
+    return cs.encode(out, WORKING_TRANSFER)
+
+
+# Luminance weights of linear working (ProPhoto) red and green; blue's is ~0. A wheel's tint keeps
+# this luminance at 1, so hue and saturation recolor without brightening.
+_TINT_LUMA = (0.2880859375, 0.7119140625, 0.0)
+# hexcone sector of the hue -> (channel at the top, channel moving between, its 0..1 position)
+_TINT_SECTORS = ((0, 1, lambda h: h / 60), (1, 0, lambda h: (120 - h) / 60), (1, 2, lambda h: (h - 120) / 60),
+                 (2, 1, lambda h: (240 - h) / 60), (2, 0, lambda h: (h - 240) / 60), (0, 2, lambda h: (360 - h) / 60))
+
+
+def _wheel_tint(hue: float, strength: float, lo: float, hi: float) -> np.ndarray:
+    """Per-channel factors for a wheel's hue: unit luminance, spread ``strength * (hi - lo)``.
+
+    The top channel sits ``spread`` above the lowest, the hue's neighbour in between; the lowest
+    is kept in [lo, hi] and so that the top stays in range too.
+    """
+    top, mid, pos = _TINT_SECTORS[int(hue % 360 // 60)]
+    spread = (hi - lo) * strength
+    f = pos(hue % 360)
+    base = 1 - spread * (_TINT_LUMA[top] + f * _TINT_LUMA[mid])
+    base = max(min(max(min(base, hi), lo), hi - spread), lo - spread)
+    out = np.full(3, base)
+    out[top], out[mid] = base + spread, base + f * spread
     return out
+
+
+def _bend(x: np.ndarray, d: float) -> np.ndarray:
+    """Rational curve through (0, 0), (d, 0.5) and (1, 1)."""
+    k = (1 - d) / d
+    return k * x / (k * x + 1 - x)
+
+
+def _unbend(y: np.ndarray, d: float) -> np.ndarray:
+    k = (1 - d) / d
+    return (y / k) / (y / k + 1 - y)
+
+
+def _zone_cubic(q: np.ndarray, low: float, high: float) -> np.ndarray:
+    """Cubic through (0, 0) and (1, 1) whose shadow and highlight slopes follow ``low``/``high``
+    (``low`` 1, ``high`` 2 is the identity)."""
+    return q * (q * q + (low + q * (high - low)) * (1 - q))
+
+
+def _lift(t: np.ndarray) -> np.ndarray:
+    return np.where(t < 0.48, ((0.72338 * t) * t + 0.5) * t + 0.16, t)
+
+
+def _dim(t: np.ndarray) -> np.ndarray:
+    return np.where(t > 0.52, ((0.72338 * t - 2.17014) * t + 2.67014) * t - 0.38338, t)
+
+
+def grade_curves(shadows: Zone = Zone(), midtones: Zone = Zone(), highlights: Zone = Zone(),
+                 global_: Zone = Zone(), blending: float = 50.0,
+                 balance: float = 0.0) -> tuple[Callable[[np.ndarray], np.ndarray], ...]:
+    """The red, green and blue curves of a color grade, on linear working values in [0, 1].
+
+    Shadows and highlights tint by cubic zone curves split at a balance point (the sRGB-decoded
+    0.5 -/+ 0.4 * balance); blending mixes the split toward one smooth curve. Midtones and the
+    global wheel bend each channel around its middle. The zone luminances act on the
+    sRGB-encoded value: shadows lift (black too), highlights dim (white too).
+    """
+    bw = float(_bend(np.array(blending / 100), 0.7))
+    spread = 0.9 + 0.002 * max(blending - 50, 0.0)
+    shadow = _wheel_tint(shadows.hue, shadows.sat * spread / 100, 0.05, 2.5)
+    highlight = 3 - _wheel_tint(highlights.hue, -highlights.sat * spread / 100, 0.2, 2.5)
+    middle = _wheel_tint(midtones.hue, 1.0, -1.0, 1.0) * midtones.sat / 100
+    overall = _wheel_tint(global_.hue, 1.0, -1.0, 1.0) * global_.sat / 100
+    fade = 1 - 0.85 * abs(balance) / 100
+    shadow_lum, highlight_lum = shadows.lum, highlights.lum
+    if shadow_lum > 0:
+        shadow_lum *= 0.7 * (fade if balance > 0 else 1.0)
+    if highlight_lum < 0:
+        highlight_lum *= 0.7 * (fade if balance < 0 else 1.0)
+    low, high = 1 + shadow_lum / 100, 2 + highlight_lum / 100
+    mid_lum, global_lum = midtones.lum / 100, global_.lum / 100
+    split = float(cs.decode(np.array(0.5 - 0.4 * np.clip(balance / 100, -1, 1)), WORKING_TRANSFER))
+    gray = float(cs.decode(np.array(0.5), WORKING_TRANSFER))
+
+    def curve(c: int) -> Callable[[np.ndarray], np.ndarray]:
+        def apply(x: np.ndarray) -> np.ndarray:
+            xs = _bend(x, split)
+            bell = 1 - (2 * xs - 1) ** 2
+            narrow = bell * bell
+            y = x
+            if low != 1 or high != 2:
+                y = np.where(xs <= 0.5, _zone_cubic(xs, low, 2), _zone_cubic(xs, 1, high))
+                y = y + (xs - y) * narrow
+                y = y + (_zone_cubic(xs, low, high) - y) * bw
+                t = cs.encode(_unbend(y, split), WORKING_TRANSFER)
+                if low > 1:
+                    t = t + (_lift(t) - t) * (low - 1)
+                if high < 2:
+                    t = t + (_dim(t) - t) * (2 - high)
+                y = cs.decode(t, WORKING_TRANSFER)
+            ys = _bend(y, split)
+            out = _zone_cubic(ys, shadow[c], highlight[c])
+            if shadow[c] != 1 or highlight[c] != 2:
+                split_tone = np.where(xs <= 0.5, _zone_cubic(ys, shadow[c], 2), _zone_cubic(ys, 1, highlight[c]))
+                split_tone = split_tone + (ys - split_tone) * narrow
+                out = split_tone + (out - split_tone) * bw
+            weight = narrow + (bell - narrow) * bw
+            if middle[c]:
+                out = out + (_bend(out, 0.5 - 0.14 * middle[c]) - out) * weight
+            if mid_lum:
+                out = out + (_bend(out, 0.5 - 0.12 * mid_lum) - out) * weight
+            out = _unbend(out, split)
+            if overall[c] or global_lum:
+                z = _bend(out, gray)
+                if overall[c]:
+                    z = _bend(z, 0.5 - 0.14 * overall[c])
+                if global_lum:
+                    z = _bend(z, 0.5 - 0.12 * global_lum)
+                out = _unbend(z, gray)
+            return out
+        return apply
+
+    return tuple(curve(c) for c in range(3))
 
 
 # --- saturation, vibrance, grayscale ----------------------------------------------------------------
@@ -467,6 +582,9 @@ class _Sliders:
     def bands(self, prefix: str) -> dict[str, float]:
         return {b: self.number(f"{prefix}{b.capitalize()}") for b in BANDS}
 
+    def has(self, key: str) -> bool:
+        return any(p is not None and p.has(key) for p in (self.preset, self.profile))
+
     def zone(self, name: str, legacy: str | None = None) -> Zone:
         hue = self.number(f"ColorGrade{name}Hue")
         sat = self.number(f"ColorGrade{name}Sat")
@@ -522,10 +640,18 @@ def _stage_hsl(s: _Sliders, enc: np.ndarray) -> np.ndarray:
                       s.bands("LuminanceAdjustment"))
 
 
+_LEGACY_SPLIT_TONING = ("SplitToningShadowHue", "SplitToningShadowSaturation", "SplitToningHighlightHue",
+                        "SplitToningHighlightSaturation", "SplitToningBalance")
+
+
 def _stage_grade(s: _Sliders, enc: np.ndarray) -> np.ndarray:
+    # Measured: Lightroom reads settings with split-toning keys but no blending as legacy split
+    # toning, which is Blending 100; color-grading settings default to 50.
+    legacy = any(s.has(k) for k in _LEGACY_SPLIT_TONING)
+    blending = s.number("ColorGradeBlending", 50.0 if s.has("ColorGradeBlending") or not legacy else 100.0)
     return color_grade(enc, shadows=s.zone("Shadow", legacy="Shadow"), midtones=s.zone("Midtone"),
                        highlights=s.zone("Highlight", legacy="Highlight"), global_=s.zone("Global"),
-                       blending=s.number("ColorGradeBlending", 50), balance=s.number("SplitToningBalance"))
+                       blending=blending, balance=s.number("SplitToningBalance"))
 
 
 def _stage_saturation(s: _Sliders, enc: np.ndarray) -> np.ndarray:
