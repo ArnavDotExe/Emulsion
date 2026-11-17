@@ -39,7 +39,6 @@ CAL_GROUP = "FilmSim Calibration"
 
 #: search range for each strength
 K_BOUNDS: dict[str, tuple[float, float]] = {
-    "K_MIXER": (0.0, 3.0),
     "K_SCENE": (0.05, 1.0),
 }
 
@@ -115,7 +114,7 @@ def _build() -> tuple[Variant, ...]:
     out.append(Variant("Cal BW Neutral Mix", mixer))
     for band in BANDS:
         b = band.capitalize()
-        out.append(Variant(f"Cal BW Mix {b} +100", {**mixer, f"GrayMixer{b}": "+100"}, fits=("K_MIXER",)))
+        out.append(Variant(f"Cal BW Mix {b} +100", {**mixer, f"GrayMixer{b}": "+100"}))
     return tuple(out)
 
 

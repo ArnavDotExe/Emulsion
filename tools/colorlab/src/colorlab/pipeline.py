@@ -32,7 +32,6 @@ WORKING = cs.PROPHOTO_RGB
 WORKING_TRANSFER = cs.Transfer.SRGB
 
 BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta")
-_BAND_CENTERS = np.array([0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0, 360.0])
 _LUMA = WORKING.rgb_to_xyz[1] / WORKING.rgb_to_xyz[1].sum()
 # Bradford cone responses from linear working RGB, each row scaled so white maps to (1, 1, 1)
 _CONES = cs._BRADFORD @ WORKING.rgb_to_xyz
@@ -52,7 +51,6 @@ def _response() -> response.Response:
     return RESPONSE
 
 # Constants fitted with `colorlab.calibration` to single-slider Lightroom bakes.
-K_MIXER = 1.55  # B&W mixer strength at slider 100 (2026-11-15)
 #: the HSL stage's unit on the stretched (scene-linear) scale: vibrance and the band luminance and
 #: saturation taper as a channel nears 1 in this unit (fitted to the HSL and Vibrance bakes)
 K_SCENE = 0.141  # 2026-11-18, all 147 bakes
@@ -257,29 +255,7 @@ def parametric_curve(enc: np.ndarray, shadows: float = 0.0, darks: float = 0.0, 
     return rgb_tone(enc, curve)
 
 
-# --- hue/chroma decomposition ---------------------------------------------------------------------
-
-def _hue(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Hexcone hue in degrees and chroma (max - min)."""
-    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    mx, mn = rgb.max(axis=-1), rgb.min(axis=-1)
-    c = mx - mn
-    safe = np.where(c > 0, c, 1.0)
-    h = np.where(mx == r, ((g - b) / safe) % 6, np.where(mx == g, (b - r) / safe + 2, (r - g) / safe + 4))
-    return (h * 60.0) % 360.0, c
-
-
-def _band_weights(h: np.ndarray) -> np.ndarray:
-    """Weight of each of the eight bands for hue ``h``; tent-shaped, summing to 1."""
-    idx = np.clip(np.searchsorted(_BAND_CENTERS, h, side="right") - 1, 0, 7)
-    lo, hi = _BAND_CENTERS[idx], _BAND_CENTERS[idx + 1]
-    t = (h - lo) / (hi - lo)
-    w = np.zeros(h.shape + (8,))
-    np.put_along_axis(w, idx[..., None], (1 - t)[..., None], axis=-1)
-    nxt = ((idx + 1) % 8)[..., None]
-    np.put_along_axis(w, nxt, np.take_along_axis(w, nxt, axis=-1) + t[..., None], axis=-1)
-    return w
-
+# --- hue bands -----------------------------------------------------------------------------------
 
 def _band_values(name: str, values: Mapping[str, float] | None, lo: float, hi: float) -> np.ndarray:
     out = np.zeros(8)
@@ -687,13 +663,61 @@ def _hexcone_hue(x: np.ndarray, hi: np.ndarray, gap: np.ndarray) -> np.ndarray:
     return np.where(gap > 0, h, 0.0)
 
 
+#: a B&W band slider at -100 sets its gray weight to this; at +100 it adds this to the default
+_MIXER_DOWN, _MIXER_UP = -2.0, 2.25
+
+
 def grayscale(enc: np.ndarray, mixer: Mapping[str, float] | None = None) -> np.ndarray:
-    """Black-and-white conversion; ``mixer`` brightens or darkens each band (-100..100)."""
-    mv = _band_values("mixer", mixer, -100, 100)
+    """Black-and-white conversion, as Lightroom's B&W mixer; ``mixer`` moves each band (-100..100).
+
+    Runs on the HSL stage's scene scale (units of ``K_SCENE``). Each color's gray lies on the line
+    from its smallest to its largest channel, ``lo + w * (hi - lo)``, with the weight ``w`` read at
+    the color's hexcone hue from a table of the eight band weights (linear between band centers).
+    A band's weight at 0 is the scene luminance of its center's pure color, so the neutral mix
+    is luminance at every center. A negative weight puts the gray below the min, along a
+    perceptual curve (:func:`_dark_encode`) so it darkens smoothly instead of going negative.
+    Grays stay as they are.
+
+    Lightroom builds the table differently from process version 15.4; that table isn't
+    reconstructed yet, so every version uses this one.
+    """
+    sliders = _band_values("mixer", mixer, -100, 100) / 100
     enc = _as_rgb(enc)
-    h, c = _hue(enc)
-    gray = enc @ _LUMA + K_MIXER * (_band_weights(h) @ (mv / 100)) * c
-    return np.where((c > 0)[..., None], np.repeat(gray[..., None], 3, axis=-1), enc)
+    table = _band_table(_mixer_weight(sliders, _mixer_defaults()), smooth=False)
+    lo, hi, h, gap = _to_mmh(_to_scene(enc) * K_SCENE, smooth=False)
+    w = _lookup(table, h)
+    dark = _dark_decode(_dark_encode(lo) + (_dark_encode(hi) - _dark_encode(lo)) * w)
+    gray = np.clip(np.where(w >= 0, lo + gap * w, dark), 0.0, 1.0)
+    out = _from_scene(np.repeat(gray[..., None], 3, axis=-1) / K_SCENE)
+    return np.where((gap > 0)[..., None], out, enc)
+
+
+def _mixer_defaults() -> np.ndarray:
+    """Each band's gray weight at 0: the luminance of its center's pure color (min 0, max 1)."""
+    pure = _from_mmh(np.zeros(8), np.ones(8), HSL_CENTERS / 60.0, smooth=False)
+    return pure @ np.asarray(_TINT_LUMA)
+
+
+def _mixer_weight(slider: np.ndarray, default: np.ndarray) -> np.ndarray:
+    """Band sliders (-1..1) -> gray weights: flattened around 0, then the parabola through
+    (-1, ``_MIXER_DOWN``), (0, ``default``) and (1, ``default + _MIXER_UP``)."""
+    k = (1.0 - default * default / 2.0) / 2.0
+    s = slider * (1.0 - k + k * np.abs(slider))
+    down, up = _MIXER_DOWN, default + _MIXER_UP
+    return default + ((up - down) / 2.0 + ((down + up) / 2.0 - default) * s) * s
+
+
+def _dark_encode(x: np.ndarray) -> np.ndarray:
+    """A perceptual curve for the mixer's darkening: linear (x12) below 0, ``3x / (6.75x + 0.25)``
+    up to 1/9 and ``0.75x + 0.25`` above (continuous, 0 -> 0 and 1 -> 1)."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(x < 0, 12.0 * x, np.where(x < 1 / 9, 3.0 * x / (6.75 * x + 0.25), 0.75 * x + 0.25))
+
+
+def _dark_decode(y: np.ndarray) -> np.ndarray:
+    """The inverse of :func:`_dark_encode`."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(y < 0, y / 12.0, np.where(y < 1 / 3, y / (12.0 - 27.0 * y), (y - 0.25) / 0.75))
 
 
 # --- whole preset -------------------------------------------------------------------------------------

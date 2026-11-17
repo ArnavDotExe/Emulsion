@@ -571,6 +571,46 @@ by mean ΔE, with each model below. Mean over the 12 Temperature and Tint bakes:
   Exposure 0.87 → 0.51 (+2 1.76 → 0.86); all 147 bakes 0.65 → 0.52.
 - Private presets: median 0.88, mean 1.40 → 1.38.
 
+## The B&W mixer as Lightroom's per-hue gray between min and max
+
+Journey: as the maintainer, I want a black-and-white look's mixer to turn colors into the grays
+Lightroom gives, so a B&W film look matches its original. Formulas come from study of the
+shipped Lightroom engine (behaviour only); the code and the band defaults are our own derivation.
+
+What Lightroom does, now in `pipeline.grayscale`:
+- It runs on the HSL stage's scene scale (`_to_scene`, units of `K_SCENE`) and uses the same
+  split into min, max and hexcone hue.
+- The gray is `lo + w × (hi − lo)`. The weight `w` comes from a 360-entry hue table of the eight
+  band weights, linear between the band centers.
+- A band's default weight is the scene luminance (`_TINT_LUMA`) of its center's pure color, for
+  example 0.2881 for red and 0.7119/6 for blue at 230°. So the neutral mix is luminance at each
+  center. These eight values are derived in `_mixer_defaults` and match Lightroom's to 6 digits.
+- A slider `s` (−1..1) is first flattened around 0 (`s × (1 − k + k|s|)`, with
+  `k = (1 − d²/2)/2`). It then follows the parabola through (−1, −2), (0, d) and (1, d + 2.25).
+- Negative weights put the gray below the min along a perceptual curve (linear below 0,
+  `3x/(6.75x + 0.25)` up to 1/9, `0.75x + 0.25` above), so it darkens without going negative.
+  Grays are unchanged, and the result is clipped to 0..1 on that scale.
+- `K_MIXER` is gone, and `K_SCENE` is now the only fitted constant.
+- Known gap: from process version 15.4 Lightroom uses another hue table. It isn't plain
+  luminance on the smooth hue model (that guess scores 1.32 on the B&W presets against 0.63 for
+  the linear table), so every version uses the linear table for now. Measuring it needs a B&W
+  bake at process version 15.4.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Neutral mix is scene luminance at all eight band centers | `test_pipeline.py::test_neutral_mix_gives_scene_luminance_at_each_band_center` | PASS |
+| 2 | +100 adds 2.25 min-to-max gaps; −100 darkens monotonically and stays ≥ 0; grays unchanged | `test_mixer_plus_100_adds_two_and_a_quarter_gaps_and_minus_100_darkens_smoothly` | PASS |
+| 3 | Four Lightroom fixtures (Neutral, Yellow, Blue, Red +100) | `test_render_bw_mixer_matches_lightroom` | PASS |
+| 4 | No fitted mixer strength; `K_SCENE` is the only fitted constant | `test_calibration.py::test_bw_mixer_is_reconstructed_not_fitted` | PASS |
+| 5 | B&W bakes under 0.40, each under 0.55; presets median ≤ 0.95, mean ≤ 1.38 (local) | `tests/private/test_bw_vs_bakes.py`, `test_pipeline_vs_lightroom.py` | PASS |
+
+- RED `e292ccf`: 14 public tests failed (band-center gray off by up to 0.83, fixtures by up to
+  0.17, `K_MIXER` present). Private: BW Neutral Mix 2.54, presets mean 1.38.
+- GREEN: 439 pass (426 public), coverage 98%. The fit tests now fit `K_SCENE` from the Vibrance
+  bakes.
+- B&W bakes 3.42 → 0.34 (every band 0.27–0.46); all 147 bakes 0.52 → 0.33.
+- Private presets: median 0.88 → 0.87, mean 1.38 → 1.34 (the one scored B&W preset 2.80 → 0.63).
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one
