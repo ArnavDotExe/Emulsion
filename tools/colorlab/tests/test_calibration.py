@@ -299,25 +299,14 @@ def test_measure_response_recovers_white_balance_hue_preservation_per_amount(tmp
     np.testing.assert_allclose(got.temperature[100.0], [1.6, 1.3, 0.0], atol=0.08)
     np.testing.assert_allclose(got.tint[-100.0], [0.5, 0.0, 1.0], atol=0.08)
 
-def test_measure_response_recovers_vibrance(tmp_path, monkeypatch):
-    shipped = response.load()
-    amounts = (-100.0, -50.0, 50.0, 100.0)
-    truth = response.VibranceResponse(
-        chroma=shipped.vibrance.chroma, pivots=(0.5, 0.7),
-        gains={a: np.full(len(shipped.vibrance.chroma), 1 + a / 250) for a in amounts},
-        bands={a: np.ones(8) for a in amounts},
-    )
-    monkeypatch.setattr(pipeline, "RESPONSE", dataclasses.replace(shipped, vibrance=truth))
+def test_vibrance_bakes_fit_the_kernel_scale_and_are_not_measured_as_a_table(tmp_path):
+    assert {v.name for v in variants_fitting("K_VIBRANCE")} == {v.name for v in solo("Vibrance")}
     luts = tmp_path / "luts"
     luts.mkdir()
     for v in solo("Vibrance"):
-        if abs(float(v.settings["Vibrance"])) in (50, 100):
-            write_cube(render_lut(parse_preset(variant_xmp(v)), size=17), luts / f"{v.name}.cube")
-    monkeypatch.setattr(pipeline, "RESPONSE", shipped)
-    got = measure_response(luts).response.vibrance
-    assert got.pivots == pytest.approx((0.5, 0.7), abs=0.051)
-    np.testing.assert_allclose(got.gains[100.0][1:6], 1.4, atol=0.08)
-    np.testing.assert_allclose(got.gains[-50.0][1:6], 0.8, atol=0.08)
+        write_cube(render_lut(parse_preset(variant_xmp(v)), size=9), luts / f"{v.name}.cube")
+    report = measure_response(luts)
+    assert "Vibrance" not in report.measured + report.kept
 
 
 def test_cli_response_writes_a_loadable_file(tmp_path, capsys):

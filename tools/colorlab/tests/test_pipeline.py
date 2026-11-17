@@ -415,11 +415,46 @@ def test_vibrance_minus_100_keeps_some_color():
     assert 0.2 < kept < 0.5
 
 
-def test_vibrance_keeps_hue_and_pivots_toward_the_channel_midrange():
-    from colorlab.pipeline import _LUMA, _hue
+def scene(enc):
+    """Working values on the exposure shoulder's stretched (scene-linear) scale."""
+    from colorlab.pipeline import _response
+    return _response().exposure.stretch(np.asarray(enc, dtype=np.float64))
+
+
+def test_vibrance_keeps_hue_on_the_scene_linear_scale_and_brightens_drained_blues():
+    from colorlab.pipeline import _LUMA
     out = saturation_vibrance(BLUE, vibrance=-100)
-    assert _hue(out)[0] == pytest.approx(_hue(BLUE)[0], abs=1e-6)
+    place = lambda x: (x[1] - x.min()) / np.ptp(x)  # the middle channel's place between min and max
+    assert place(scene(out)) == pytest.approx(place(scene(BLUE)), abs=1e-9)
     assert out @ _LUMA > BLUE @ _LUMA  # Lightroom brightens blues as vibrance drains them
+
+
+def test_saturation_keeps_scene_linear_luminance():
+    ys = np.array([0.2880859375, 0.7119140625, 0.0])  # the working space's luminance weights
+    for sat in (-60, 50):
+        out = saturation_vibrance(MUTED, saturation=sat)
+        assert scene(out) @ ys == pytest.approx(scene(MUTED) @ ys, rel=1e-9)
+
+
+# Lightroom bakes of the calibration presets (sRGB in and out) at in-gamut colors
+SV_SAMPLES = np.array([[0.55, 0.45, 0.42], [0.6, 0.5, 0.3], [0.35, 0.4, 0.55]])
+
+
+@pytest.mark.parametrize("settings,expected", [
+    ({"Saturation": "-50"}, [[0.513, 0.461, 0.447], [0.561, 0.507, 0.42], [0.377, 0.4, 0.481]]),
+    ({"Saturation": "+50"}, [[0.584, 0.439, 0.392], [0.633, 0.495, 0.092], [0.321, 0.4, 0.607]]),
+    ({"Vibrance": "-100"}, [[0.411, 0.402, 0.399], [0.416, 0.39, 0.352], [0.38, 0.385, 0.407]]),
+    ({"Vibrance": "+50"}, [[0.56, 0.45, 0.417], [0.628, 0.506, 0.224], [0.277, 0.36, 0.569]]),
+])
+def test_render_saturation_and_vibrance_match_lightroom(settings, expected):
+    np.testing.assert_allclose(render(parse_preset(make_xmp(settings)), SV_SAMPLES), expected, atol=0.02)
+
+
+def test_stages_run_in_lightrooms_order():
+    # Lightroom: saturation, then vibrance and HSL (one stage, vibrance first; B&W replaces HSL),
+    # all on scene-linear values before the tone curve; then curves, profile table, color grading.
+    from colorlab.pipeline import ORDER
+    assert ORDER == ("saturation", "hsl", "grayscale", "tone", "parametric", "curves", "look", "grade")
 
 
 def test_saturation_and_vibrance_leave_neutrals():

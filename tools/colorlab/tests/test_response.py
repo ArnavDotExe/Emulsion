@@ -2,8 +2,7 @@
 
 Tone sliders are tables of neutral curves at the amounts that were baked; between
 them the clip points move linearly and the shape in between is blended.
-Exposure is a two-parameter shoulder. Vibrance is a chroma-gain table around a
-pivot between each color's min and max channel.
+Exposure is a two-parameter shoulder. White balance is stops per Bradford cone.
 """
 import json
 
@@ -18,7 +17,6 @@ from colorlab.response import (
     CurveFamily,
     ExposureShoulder,
     Response,
-    VibranceResponse,
     WhiteBalanceResponse,
     load,
 )
@@ -197,36 +195,17 @@ def test_shipped_white_balance_preserves_more_hue_at_larger_amounts():
             small, big = table[25.0 * sign], table[100.0 * sign]
             assert 0.0 <= small <= big <= 1.0 and big > 0.0
 
-# --- vibrance ------------------------------------------------------------------------------------
+# --- vibrance is a formula now, not a measured table ----------------------------------------------
 
-def vib():
-    chroma = (0.1, 0.5)
-    return VibranceResponse(
-        chroma=chroma, pivots=(0.6, 0.75),
-        gains={-100.0: np.array([0.2, 0.4]), 100.0: np.array([1.8, 1.1])},
-        bands={-100.0: np.ones(8), 100.0: np.array([0.5, 1, 1, 1, 1, 1, 1, 1.0])},
-    )
-
-
-def test_vibrance_gain_is_one_at_zero_and_follows_chroma():
-    v = vib()
-    c = np.array([0.1, 0.3, 0.5, 0.9])
-    green = np.zeros((4, 8))
-    green[:, 3] = 1  # green band only, factor 1
-    np.testing.assert_allclose(v.gain(c, green, 0), 1)
-    np.testing.assert_allclose(v.gain(c, green, 100), [1.8, 1.45, 1.1, 1.1])
-    np.testing.assert_allclose(v.gain(c, green, 50), [1.4, 1.225, 1.05, 1.05])
-    np.testing.assert_allclose(v.gain(c, green, -100), [0.2, 0.3, 0.4, 0.4])
-
-
-def test_vibrance_band_factors_scale_the_change():
-    red = np.zeros((1, 8))
-    red[0, 0] = 1
-    assert vib().gain(np.array([0.1]), red, 100)[0] == pytest.approx(1.4)  # half of +0.8
-
-
-def test_vibrance_pivot_depends_on_direction():
-    assert vib().pivot(-20) == 0.6 and vib().pivot(20) == 0.75
+def test_response_has_no_vibrance_table_and_older_files_with_one_still_load(tmp_path):
+    r = load()
+    assert not hasattr(r, "vibrance")
+    data = r.to_dict()
+    assert "vibrance" not in data
+    data["vibrance"] = {"chroma": [0.0, 1.0], "pivots": [0.5, 0.5], "gains": {}, "bands": {}}
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert load(path).exposure == r.exposure
 
 
 # --- the shipped response ---------------------------------------------------------------------
@@ -258,7 +237,6 @@ def test_response_round_trips_through_json(tmp_path):
     for key in TONE_KEYS:
         for a, y in r.tone[key].curves.items():
             np.testing.assert_allclose(back.tone[key].curves[a], y, atol=1e-6)
-    assert back.vibrance.pivots == r.vibrance.pivots
     np.testing.assert_allclose(back.white_balance.evs(30, -20), r.white_balance.evs(30, -20), atol=1e-6)
 
 
