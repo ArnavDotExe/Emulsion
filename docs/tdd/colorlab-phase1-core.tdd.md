@@ -437,6 +437,56 @@ files that still hold one load, and the table is ignored.
 - Known gap: strong saturation that pushes a color out of sRGB gamut. Saturation +100 is 1.63,
   and a red at +50 is 0.07 off where Lightroom clips its blue to 0.
 
+## HSL as Lightroom's band tables on scene-linear min, max and hue
+
+Journey: as the maintainer, I want a look's HSL sliders to move colors as Lightroom moves them, so
+a look that retunes greens or skin matches its Lightroom original. Formulas come from study of the
+shipped Lightroom engine (behaviour only); the code is our own.
+
+What Lightroom does, now in `pipeline.hsl_adjust`:
+- Vibrance and HSL are one stage on scene-linear values (the stretched scale, in units of the
+  fitted `K_SCENE`). Each color is split into its min, max and hexcone hue; vibrance moves min and
+  max first, then the bands are applied, then the color is rebuilt.
+- Band centers sit at 0/30/55/95/160/230/275/330°, not evenly spaced. A band's value fades
+  linearly to the next center, in a 360-entry table looked up at the color's original hue.
+- Hue moves a band's center toward the neighbouring band by max(0.9 × gap, 30°) at ±100.
+- Saturation cuts pull min and max toward their middle (−100 gives gray); boosts lower the min by
+  a vibrance-like formula that fades in deep shadows.
+- Luminance scales min and max by `1 + (1 − v) × a` twice, weaker for bright channels and for
+  near-neutrals.
+- From process version 15.4, the tables are monotone splines (Fritsch–Carlson) and colors use a
+  smooth hue model: min and max are pulled toward the middle channel before tuning, and the
+  inverse undoes it exactly. That covers vibrance too. Older presets use the plain hexcone.
+- `K_HUE` and `K_LUMINANCE` are gone. `K_VIBRANCE` became `K_SCENE`, fitted to all 48 HSL bakes
+  and the 6 Vibrance bakes: 0.145.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Band centers are Lightroom's eight | `test_pipeline.py::test_hsl_band_centers_are_lightrooms` | PASS |
+| 2 | Hue ±100 moves a center by Lightroom's offset (red, blue, green, magenta wrapping) | `test_hsl_hue_moves_a_band_center_by_lightrooms_offset` | PASS |
+| 3 | Band values fall off linearly between centers | `test_hsl_band_values_fall_off_linearly_between_centers` | PASS |
+| 4 | Saturation −100 at a center gives gray; luminance keeps the scene hue | `test_hsl_saturation_minus_100_...`, `test_hsl_luminance_keeps_...` | PASS |
+| 5 | Both color models round-trip exactly | `test_hsl_models_round_trip` | PASS |
+| 6 | 15.4 changes band and vibrance results, not other sliders; grays stay gray | `test_process_version_15_4_uses_spline_tables_and_the_smooth_hue_model` | PASS |
+| 7 | Four Lightroom bake fixtures within 0.015 | `test_render_hsl_matches_lightroom` | PASS |
+| 8 | One fitted scene scale; HSL and Vibrance bakes fit it | `test_calibration.py::test_hsl_and_vibrance_share_one_fitted_scene_scale` | PASS |
+| 9 | HSL bakes average under 0.62, each under 2.2 (local) | `tests/private/test_hsl_vs_bakes.py` | PASS |
+| 10 | Presets median ≤ 1.20, mean ≤ 1.75 (local) | `tests/private/test_pipeline_vs_lightroom.py` | PASS |
+
+- RED `2a2165e`: 19 failed. They were the missing names (`K_SCENE`, `HSL_CENTERS`,
+  `_from_mmh`), fixtures up to 0.114 off, an identical 15.4 render, and the private limits (Hue
+  Yellow +100 2.34, presets median 1.63).
+- GREEN: 415 pass (406 public), coverage 98%.
+- HSL bakes 1.83 → 0.57; all 147 bakes 1.23 → 0.82.
+- Private presets: median 1.63 → 1.14, mean 3.45 → 1.67. Of the 28 presets that use HSL, the
+  plain tables alone give 1.80 mean; the 15.4 path for its 20 presets gives the rest.
+- Cost: Vibrance bakes 0.67 → 0.79, because vibrance now shares the HSL scale (it preferred 0.2,
+  the bands 0.15). The private Vibrance limit went from 0.75 to 0.82.
+- The stretched scale is unbounded, so the smooth inverse clamps only at 0, not at 1 (1.673 vs
+  1.679 mean with the clamp at 1).
+- Known gap: colors pushed out of sRGB gamut. In Hue Blue −100 (2.05), in-gamut samples are
+  0.41 and out-of-gamut ones 7.4.
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one

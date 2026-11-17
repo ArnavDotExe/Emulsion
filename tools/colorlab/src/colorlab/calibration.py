@@ -39,10 +39,8 @@ CAL_GROUP = "FilmSim Calibration"
 
 #: search range for each strength
 K_BOUNDS: dict[str, tuple[float, float]] = {
-    "K_HUE": (0.0, 1.0),
-    "K_LUMINANCE": (0.0, 1.5),
     "K_MIXER": (0.0, 3.0),
-    "K_VIBRANCE": (0.05, 1.0),
+    "K_SCENE": (0.05, 1.0),
 }
 
 #: channels the measured white balance moves (``response.WB_SPACES``): Bradford cones fit the
@@ -101,11 +99,11 @@ def _build() -> tuple[Variant, ...]:
         out.append(Variant(f"Cal Curve {name}", custom, {**curves, key: pts}))
     for band in BANDS:
         b = band.capitalize()
-        out += _sweep(f"HSL Hue {b}", f"HueAdjustment{b}", (-100, 100), ("K_HUE",))
-        out += _sweep(f"HSL Sat {b}", f"SaturationAdjustment{b}", (-100, 100))
-        out += _sweep(f"HSL Lum {b}", f"LuminanceAdjustment{b}", (-100, 100), ("K_LUMINANCE",))
+        out += _sweep(f"HSL Hue {b}", f"HueAdjustment{b}", (-100, 100), ("K_SCENE",))
+        out += _sweep(f"HSL Sat {b}", f"SaturationAdjustment{b}", (-100, 100), ("K_SCENE",))
+        out += _sweep(f"HSL Lum {b}", f"LuminanceAdjustment{b}", (-100, 100), ("K_SCENE",))
     out += _sweep("Saturation", "Saturation", (-100, -50, 50, 100))
-    out += _sweep("Vibrance", "Vibrance", (-100, -50, -25, 25, 50, 100), ("K_VIBRANCE",))
+    out += _sweep("Vibrance", "Vibrance", (-100, -50, -25, 25, 50, 100), ("K_SCENE",))
     zones = (("Shadows", "SplitToningShadowHue", "SplitToningShadowSaturation", "ColorGradeShadowLum"),
              ("Midtones", "ColorGradeMidtoneHue", "ColorGradeMidtoneSat", "ColorGradeMidtoneLum"),
              ("Highlights", "SplitToningHighlightHue", "SplitToningHighlightSaturation", "ColorGradeHighlightLum"),

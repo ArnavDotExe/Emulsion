@@ -51,12 +51,11 @@ def _response() -> response.Response:
         RESPONSE = response.load()
     return RESPONSE
 
-# Stage strengths (slider value 100 == full strength), fitted with `colorlab.calibration`
-# to single-slider Lightroom bakes (2026-11-15, 143 bakes).
-K_HUE = 0.831  # fraction of the gap to the neighbouring band at hue 100
-K_LUMINANCE = 0.708
-K_MIXER = 1.55
-K_VIBRANCE = 0.2  # the stretched scale's unit for the vibrance kernel (0.18-0.22 fit equally)
+# Constants fitted with `colorlab.calibration` to single-slider Lightroom bakes.
+K_MIXER = 1.55  # B&W mixer strength at slider 100 (2026-11-15)
+#: the HSL stage's unit on the stretched (scene-linear) scale: vibrance and the band luminance and
+#: saturation taper as a channel nears 1 in this unit (fitted to the HSL and Vibrance bakes)
+K_SCENE = 0.145  # 2026-11-17, all 147 bakes
 
 Curve = Sequence[tuple[float, float]]
 
@@ -94,13 +93,7 @@ def spline(points: Curve) -> Callable[[np.ndarray], np.ndarray]:
 
     def evaluate(v: np.ndarray) -> np.ndarray:
         v = np.asarray(v, dtype=np.float64)
-        j = np.clip(np.searchsorted(x, v, side="right"), 1, len(x) - 1)
-        x0, x1, y0, y1, s0, s1 = x[j - 1], x[j], y[j - 1], y[j], slopes[j - 1], slopes[j]
-        h = x1 - x0
-        t = (v - x0) / h
-        t2, t3 = t * t, t * t * t
-        out = (y0 * (2 * t3 - 3 * t2 + 1) + y1 * (3 * t2 - 2 * t3)
-               + h * (s0 * (t3 - 2 * t2 + t) + s1 * (t3 - t2)))
+        out = _hermite(x, y, slopes, v)
         return np.where(v <= x[0], y[0], np.where(v >= x[-1], y[-1], out))
 
     return evaluate
@@ -298,20 +291,6 @@ def _hue(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return (h * 60.0) % 360.0, c
 
 
-def _shape(h: np.ndarray) -> np.ndarray:
-    """Fully saturated hexcone color for hue ``h`` (min 0, max 1), luma removed."""
-    k = (np.array([5.0, 3.0, 1.0]) + np.asarray(h)[..., None] / 60.0) % 6
-    s = 1.0 - np.clip(np.minimum(k, 4 - k), 0.0, 1.0)
-    return s - (s @ _LUMA)[..., None]
-
-
-def _recompose(rgb: np.ndarray, hue: np.ndarray, chroma: np.ndarray, shift: np.ndarray | float = 0.0) -> np.ndarray:
-    """Rebuild ``rgb`` with a new hue and chroma at the same luma (plus ``shift``); neutrals pass through."""
-    luma = rgb @ _LUMA + shift
-    out = luma[..., None] + chroma[..., None] * _shape(hue)
-    return np.where((np.ptp(rgb, axis=-1) > 0)[..., None], out, rgb)
-
-
 def _band_weights(h: np.ndarray) -> np.ndarray:
     """Weight of each of the eight bands for hue ``h``; tent-shaped, summing to 1."""
     idx = np.clip(np.searchsorted(_BAND_CENTERS, h, side="right") - 1, 0, 7)
@@ -335,20 +314,151 @@ def _band_values(name: str, values: Mapping[str, float] | None, lo: float, hi: f
 
 def hsl_adjust(enc: np.ndarray, hue: Mapping[str, float] | None = None,
                saturation: Mapping[str, float] | None = None,
-               luminance: Mapping[str, float] | None = None) -> np.ndarray:
-    """Per-band hue, saturation and luminance (-100..100) over Lightroom's eight color bands."""
-    hv, sv, lv = (_band_values(n, m, -100, 100) for n, m in
+               luminance: Mapping[str, float] | None = None,
+               vibrance: float = 0.0, smooth: bool = False) -> np.ndarray:
+    """Vibrance, then per-band hue, saturation and luminance (all -100..100), as Lightroom's HSL.
+
+    Runs on scene-linear values (the exposure shoulder's stretched scale, in units of
+    ``K_SCENE``), split into each color's smallest and largest channel and its hexcone hue. A
+    band's settings fade linearly from its center to the neighbouring centers; ``smooth``
+    (process version 15.4 and later) fades them along a monotone spline instead and splits colors
+    with the smooth hue model. Hue moves a color toward the neighbouring band, by at most 90% of
+    the gap to it but at least 30 degrees. Saturation cuts pull min and max toward their middle;
+    boosts lower the min. Luminance scales both, less for bright channels and near-neutrals.
+    """
+    hv, sv, lv = (_band_values(n, m, -100, 100) / 100 for n, m in
                   (("hue", hue), ("saturation", saturation), ("luminance", luminance)))
+    _check("vibrance", vibrance, -100, 100)
     enc = _as_rgb(enc)
-    if not (hv.any() or sv.any() or lv.any()):
+    if not (vibrance or hv.any() or sv.any() or lv.any()):
         return enc
-    h, c = _hue(enc)
-    w = _band_weights(h)
-    gaps = np.diff(_BAND_CENTERS)  # gap from band i to band i+1
-    toward = np.where(hv > 0, gaps, np.roll(gaps, 1))
-    new_h = (h + (w @ (K_HUE * hv / 100 * toward))) % 360
-    new_c = c * np.maximum(1 + w @ (sv / 100), 0.0)
-    return _recompose(enc, new_h, new_c, shift=K_LUMINANCE * (w @ (lv / 100)) * c)
+    shoulder = _response().exposure
+    lo, hi, h, gap = _to_mmh(shoulder.stretch(enc) * K_SCENE, smooth)
+    if vibrance:
+        lo, hi = _vibrance(lo, hi, h, vibrance / 100)
+        gap = hi - lo
+    if hv.any() or sv.any() or lv.any():
+        hue_table = _band_table(_hue_shifts(hv), smooth) + np.arange(_TABLE_SIZE + 2) / 60.0
+        if hue_table[0] < 0:
+            hue_table = hue_table + 6.0
+        lo, hi, h = _tune_bands(lo, hi, h, gap, hue_table, _band_table(sv, smooth), _band_table(lv, smooth))
+    return shoulder.rolloff(_from_mmh(lo, hi, h, smooth) / K_SCENE)
+
+
+#: hue (degrees) of each band's center, where its sliders have their full effect
+HSL_CENTERS = np.array([0.0, 30.0, 55.0, 95.0, 160.0, 230.0, 275.0, 330.0])
+_TABLE_SIZE = 360  # band tables hold one entry per degree, plus two that wrap around
+_GAP_AHEAD = (np.roll(HSL_CENTERS, -1) - HSL_CENTERS) % 360  # degrees from each center to the next
+# channel order (r, g, b) of each hexcone sector, as indices into (min, middle, max)
+_SECTOR_CHANNELS = np.array([[2, 1, 0], [1, 2, 0], [0, 2, 1], [0, 1, 2], [1, 0, 2], [2, 0, 1]])
+
+
+def _hue_shifts(values: np.ndarray) -> np.ndarray:
+    """Hue slider per band (-1..1) -> hue shift at the band's center, in sextants (1 = 60 degrees)."""
+    gap = np.where(values >= 0, _GAP_AHEAD, np.roll(_GAP_AHEAD, 1))
+    return values * np.maximum(0.9 * gap, 30.0) / 60.0
+
+
+def _band_table(values: np.ndarray, smooth: bool) -> np.ndarray:
+    """The eight band values spread over hue, one entry per degree (wrapping)."""
+    degrees = np.arange(_TABLE_SIZE + 2, dtype=np.float64)
+    if not smooth:
+        return np.interp(degrees, HSL_CENTERS, values, period=360.0)
+    # five periods so the spline's ends don't matter; the middle period's slopes are used everywhere
+    x = np.concatenate([HSL_CENTERS + 360.0 * k for k in range(-2, 3)])
+    y = np.tile(values, 5)
+    slopes = np.tile(_monotone(x, y, _spline_slopes(x, y))[16:24], 5)
+    return _hermite(x, y, slopes, degrees % 360.0)
+
+
+def _monotone(x: np.ndarray, y: np.ndarray, slopes: np.ndarray) -> np.ndarray:
+    """Limit spline slopes so each segment stays monotone (Fritsch-Carlson)."""
+    m = slopes.copy()
+    for i in range(len(x) - 1):
+        d = (y[i + 1] - y[i]) / (x[i + 1] - x[i])
+        if d >= 0:
+            m[i], m[i + 1] = max(m[i], 0.0), max(m[i + 1], 0.0)
+        if d <= 0:
+            m[i], m[i + 1] = min(m[i], 0.0), min(m[i + 1], 0.0)
+        if d != 0:
+            r = (m[i] / d) ** 2 + (m[i + 1] / d) ** 2
+            if r > 9:
+                m[i], m[i + 1] = m[i] * 3 / np.sqrt(r), m[i + 1] * 3 / np.sqrt(r)
+    return m
+
+
+def _hermite(x: np.ndarray, y: np.ndarray, slopes: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Cubic Hermite interpolation through (x, y) with the given slopes, at ``v`` inside [x0, xn]."""
+    j = np.clip(np.searchsorted(x, v, side="right"), 1, len(x) - 1)
+    x0, x1, y0, y1, s0, s1 = x[j - 1], x[j], y[j - 1], y[j], slopes[j - 1], slopes[j]
+    h = x1 - x0
+    t = (v - x0) / h
+    t2, t3 = t * t, t * t * t
+    return (y0 * (2 * t3 - 3 * t2 + 1) + y1 * (3 * t2 - 2 * t3)
+            + h * (s0 * (t3 - 2 * t2 + t) + s1 * (t3 - t2)))
+
+
+def _lookup(table: np.ndarray, h: np.ndarray) -> np.ndarray:
+    """A band table at hue ``h`` (sextants, 0..6), interpolating between degrees."""
+    idx = h * (_TABLE_SIZE / 6.0)
+    i = np.clip(np.floor(idx).astype(np.int64), 0, _TABLE_SIZE)
+    return table[i] + (table[i + 1] - table[i]) * (idx - i)
+
+
+def _to_mmh(x: np.ndarray, smooth: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Min, max, hexcone hue (0..6) and their gap of non-negative values.
+
+    The smooth model (``smooth``) pulls the max and the min toward the middle channel by
+    ``t * t / 2`` and ``(1 - t) ** 2 / 2`` of the way, with ``t`` the middle's place between them.
+    """
+    x = np.maximum(x, 0.0)
+    hi, lo = x.max(axis=-1), x.min(axis=-1)
+    gap = hi - lo
+    h = _hexcone_hue(x, hi, gap)
+    if smooth:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            t = np.where(gap > 0, (x.sum(axis=-1) - hi - 2 * lo) / np.where(gap > 0, gap, 1.0), 0.0)
+        mid = lo + t * gap
+        hi, lo = hi + (mid - hi) * t * t * 0.5, lo + (mid - lo) * (1 - t) ** 2 * 0.5
+        gap = hi - lo
+    return lo, hi, h, gap
+
+
+def _from_mmh(lo: np.ndarray, hi: np.ndarray, h: np.ndarray, smooth: bool) -> np.ndarray:
+    """RGB from min, max and hexcone hue: the inverse of :func:`_to_mmh`."""
+    h = np.mod(h, 6.0)
+    sector = np.minimum(np.floor(h).astype(np.int64), 5)
+    f = h - sector
+    t = np.where(sector % 2 == 0, f, 1.0 - f)  # the middle channel's place between min and max
+    if smooth:
+        k = 1.0 / (t * t - t + 2.0)
+        lo, hi = (np.maximum((-t * (t - 1) ** 2 * hi + (t ** 3 - t * t + 2) * lo) * k, 0.0),
+                  np.maximum(((t + t ** 3 - 2 * t * t - 2) * -hi + (t - 1) * t * t * lo) * k, 0.0))
+    ends = np.stack([lo, lo + t * (hi - lo), hi], axis=-1)
+    return np.take_along_axis(ends, _SECTOR_CHANNELS[sector], axis=-1)
+
+
+def _tune_bands(lo: np.ndarray, hi: np.ndarray, h: np.ndarray, gap: np.ndarray, hue_table: np.ndarray,
+                sat_table: np.ndarray, lum_table: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Band luminance, then saturation, then hue, each looked up at the color's original hue."""
+    lo, hi = np.maximum(lo, 0.0), np.maximum(hi, 0.0)
+    w = np.clip(gap, 0.0, 1.0)
+    for _ in range(3):
+        w = w * (2.0 - w)  # near-neutrals take less of the band's luminance
+    a = w * _lookup(lum_table, h)
+    for _ in range(2):
+        lo = lo * (1.0 + (1.0 - np.clip(lo, 0.0, 1.0)) * a)
+        hi = hi * (1.0 + (1.0 - np.clip(hi, 0.0, 1.0)) * a)
+    sat = _lookup(sat_table, h)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        s = np.where(hi > 0, (hi - lo) / np.where(hi > 0, hi, 1.0), 0.0)
+        shadow = np.minimum(hi * 16.0, 1.0)
+        boosted = hi * (1.0 - s / (1.0 - 0.8333333 * (1.0 - s) * sat * (1.0 - lo) * shadow * (2.0 - shadow)))
+    mid = (lo + hi) / 2
+    new_lo = np.where(sat > 0, boosted, np.where(sat < 0, lo + (lo - mid) * sat, lo))
+    new_hi = np.where(sat < 0, hi + (hi - mid) * sat, hi)
+    colored = gap > 0
+    return np.where(colored, new_lo, lo), np.where(colored, new_hi, hi), np.where(colored, _lookup(hue_table, h), h)
 
 
 # --- color grading -----------------------------------------------------------------------------------
@@ -514,28 +624,24 @@ def grade_curves(shadows: Zone = Zone(), midtones: Zone = Zone(), highlights: Zo
 
 # --- saturation, vibrance, grayscale ----------------------------------------------------------------
 
-def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: float = 0.0) -> np.ndarray:
+def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: float = 0.0,
+                        smooth: bool = False) -> np.ndarray:
     """Global saturation, then vibrance (-100..100), on scene-linear values as Lightroom does.
 
     Both run on the exposure shoulder's stretched scale (the scene-linear values Lightroom
     recovers from a rendered image). Saturation scales the two opponent axes and keeps luminance.
-    Vibrance rewrites each color's largest and smallest channel and keeps the middle one in
-    place: it favours muted colors, spares skin hues when boosting, and keeps some color at -100.
+    Vibrance, the first step of :func:`hsl_adjust`, rewrites each color's largest and smallest
+    channel and keeps the middle one in place: it favours muted colors, spares skin hues when
+    boosting, and keeps some color at -100.
     """
     _check("saturation", saturation, -100, 100)
-    _check("vibrance", vibrance, -100, 100)
     enc = _as_rgb(enc)
-    if not saturation and not vibrance:
-        return enc
-    shoulder = _response().exposure
-    scene = shoulder.stretch(enc)
     if saturation:
+        shoulder = _response().exposure
         s = (saturation + 100) / 100
         matrix = _OPPONENT_INV @ np.diag([1.0, s, s]) @ _OPPONENT
-        scene = np.maximum(scene @ matrix.T, 0.0)
-    if vibrance:
-        scene = _vibrance(scene * K_VIBRANCE, vibrance / 100) / K_VIBRANCE
-    return shoulder.rolloff(scene)
+        enc = shoulder.rolloff(np.maximum(shoulder.stretch(enc) @ matrix.T, 0.0))
+    return hsl_adjust(enc, vibrance=vibrance, smooth=smooth)
 
 
 # Luminance and two opponent axes of linear working RGB: (R - G) / 2 and (B - luminance) / 4
@@ -545,16 +651,13 @@ _OPPONENT = np.array([[0.2880859375, 0.7119140625, 0.0],
 _OPPONENT_INV = np.linalg.inv(_OPPONENT)
 
 
-def _vibrance(rgb: np.ndarray, amount: float) -> np.ndarray:
-    """Vibrance ``amount`` (-1..1) on non-negative scene values.
+def _vibrance(lo: np.ndarray, hi: np.ndarray, h: np.ndarray, amount: float) -> tuple[np.ndarray, np.ndarray]:
+    """Vibrance ``amount`` (-1..1) on a color's scene min, max and hexcone hue: the new min and max.
 
-    With hexcone saturation ``s = (max - min) / max``, the largest channel and the smallest one
-    move by amounts that peak for mid-saturated colors and fade in deep shadows (below about
-    1/16) and toward white. Boosts are damped for skin hues (red to yellow). The middle
-    channel keeps its place between them, so the hexcone hue does not change.
+    With hexcone saturation ``s = (max - min) / max``, the max and the min move by amounts that
+    peak for mid-saturated colors and fade in deep shadows (below about 1/16) and toward white.
+    Boosts are damped for skin hues (red to yellow).
     """
-    x = np.maximum(rgb, 0.0)
-    hi, lo = x.max(axis=-1), x.min(axis=-1)
     gap = hi - lo
     colored = gap > 0
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -564,9 +667,9 @@ def _vibrance(rgb: np.ndarray, amount: float) -> np.ndarray:
     mid_sat = s * (1.0 - s)
     headroom = 1.0 - np.minimum(hi, 1.0)
     if amount > 0:
-        h = _hexcone_hue(x, hi, gap) + 1.0  # red-to-yellow lands on 1..2
-        h = np.where(h >= 6.0, h - 6.0, h)
-        skin = np.minimum(np.clip(h, 0.0, 1.0), np.clip((1.5 - h) * 4.0 + 1.0, 0.0, 1.0))
+        hue = h + 1.0  # red-to-yellow lands on 1..2
+        hue = np.where(hue >= 6.0, hue - 6.0, hue)
+        skin = np.minimum(np.clip(hue, 0.0, 1.0), np.clip((1.5 - hue) * 4.0 + 1.0, 0.0, 1.0))
         muted_skin = (1.0 - s * s) * skin
         push = (muted_skin * amount + 1.0 - muted_skin) * amount
         new_hi = hi * (headroom * mid_sat * (2.0 - mid_sat) * shadow * push * 0.25 + 1.0)
@@ -576,9 +679,7 @@ def _vibrance(rgb: np.ndarray, amount: float) -> np.ndarray:
         new_hi = hi * (headroom * shadow * amount * mid_sat * (2.0 - mid_sat) + 1.0)
         kept = s * (amount + 1.0 - shadow * s * amount * (s * 0.5 + 0.5))
         new_lo = new_hi * (1.0 - (amount * 0.25 + 1.0) * kept)
-    new_hi, new_lo = np.where(colored, new_hi, hi), np.where(colored, new_lo, lo)
-    place = np.where(colored[..., None], (x - lo[..., None]) / np.where(colored, gap, 1.0)[..., None], 0.0)
-    return new_lo[..., None] + place * (new_hi - new_lo)[..., None]
+    return np.where(colored, new_lo, lo), np.where(colored, new_hi, hi)
 
 
 def _hexcone_hue(x: np.ndarray, hi: np.ndarray, gap: np.ndarray) -> np.ndarray:
@@ -699,7 +800,17 @@ def _stage_curves(s: _Sliders, enc: np.ndarray) -> np.ndarray:
 
 def _stage_hsl(s: _Sliders, enc: np.ndarray) -> np.ndarray:
     return hsl_adjust(enc, s.bands("HueAdjustment"), s.bands("SaturationAdjustment"),
-                      s.bands("LuminanceAdjustment"))
+                      s.bands("LuminanceAdjustment"), vibrance=s.number("Vibrance"),
+                      smooth=_process_version(s.preset) >= (15, 4))
+
+
+def _process_version(preset: Preset) -> tuple[int, int]:
+    """``crs:ProcessVersion`` as (major, minor); (0, 0) when missing or unreadable."""
+    parts = (preset.process_version or "").split(".")
+    try:
+        return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        return 0, 0
 
 
 _LEGACY_SPLIT_TONING = ("SplitToningShadowHue", "SplitToningShadowSaturation", "SplitToningHighlightHue",
@@ -717,7 +828,7 @@ def _stage_grade(s: _Sliders, enc: np.ndarray) -> np.ndarray:
 
 
 def _stage_saturation(s: _Sliders, enc: np.ndarray) -> np.ndarray:
-    return saturation_vibrance(enc, s.number("Saturation"), s.number("Vibrance"))
+    return saturation_vibrance(enc, s.number("Saturation"))
 
 
 def _stage_grayscale(s: _Sliders, enc: np.ndarray) -> np.ndarray:
