@@ -82,7 +82,7 @@ The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values,
 saturation, vibrance + HSL (or B&W), then tone, parametric, point curves, profile table and color grading.
 Saturation, vibrance and HSL work on scene-linear values: the exposure shoulder's stretch, applied
 hue-preservingly (min and max mapped, middle kept in place; `pipeline._to_scene`). White
-balance and exposure are stops on one shared highlight shoulder: per channel for white balance, so
+balance and exposure are gains on that same scene scale: per Bradford cone for white balance, so
 white stays white. Neutral grays pass through unchanged between sRGB and the working space, so a
 bake's neutral ramp *is* Lightroom's tone curve.
 
@@ -110,13 +110,12 @@ Lightroom quirks:
 
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
-- Accuracy against the user's 44 private presets: median ΔE2000 0.88, mean 1.40. Tone curves
-  (exposure, contrast, whites/blacks, parametric, master curve) are applied hue-preservingly
-  (`pipeline.rgb_tone`); per-channel curves stay per channel. White balance is per-channel stops
-  in Bradford cone space (`pipeline.white_balance_stops`, `WhiteBalanceResponse.space`), with
-  measured hue preservation per amount (`WhiteBalanceResponse.temperature_hue`/`tint_hue`): each
-  pixel's middle channel is partly placed between its largest and smallest, so saturated colors
-  don't mix.
+- Accuracy against the user's 44 private presets: median ΔE2000 0.88, mean 1.38. Tone curves
+  (contrast, whites/blacks, parametric, master curve) are applied hue-preservingly
+  (`pipeline.rgb_tone`); per-channel curves stay per channel. White balance is measured stops per
+  Bradford cone, as gains on the scene scale (`pipeline.white_balance_stops`); exposure is the same
+  gain on all channels. Both keep the hue of linear values. Fitted against the ProPhoto exports,
+  Bradford beat CAT02, CAT16, HPE and XYZ.
 - Color grading is reconstructed, not fitted (`pipeline.grade_curves`): three per-channel 1-D curves
   on linear working values, matching all 24 grading bakes to 0.007 ΔE. Since they depend only on
   the look's settings, the app bakes them into the look's 3D LUT, at no per-frame cost. Split-toning
@@ -134,7 +133,7 @@ Lightroom quirks:
 - ProPhoto exports of all 147 bakes are in `out/cal-exports-prophoto` (16-bit, gamma 1.8). They
   show that Lightroom's sRGB export is a plain clip of its ProPhoto result (0.006 ΔE), with no
   gamut mapping, and they keep out-of-sRGB colors for checking the model.
-- All 147 calibration bakes are collected (mean 0.65 ΔE); no re-bake is pending.
+- All 147 calibration bakes are collected (mean 0.52 ΔE); no re-bake is pending.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
     deterministic (repeat exports are bit-identical).
@@ -150,11 +149,9 @@ Lightroom quirks:
 - 6b has started. The spatial calibration kit is built (`out/spatial-kit`, 70 images) and is waiting
   for the user to export it from Lightroom. Next: `collect`, then measure each effect and model it.
 - Biggest single-slider gaps:
-  - Temperature −100 5.9, Temperature +100 3.1, Tint ±100 2.5–3.0 (the 12 WB bakes are 2.08,
-    with a gray ramp of 0.88). The planned over-range stage was disproved: the clip matches
-    Lightroom, and the error was channel mixing, now fixed by the hue preservation.
+  - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
   - Vibrance −100 1.5 and Saturation +100 0.6.
-  - Since the hue-preserving tone, Exposure +2 is 1.8 and Whites +100 is 0.6.
+  - Exposure ±2 0.8–0.9 and Whites +100 0.6; Blacks +100 2.6.
   - B&W Mix +100 (3.0–4.4 per band; the mixer is still a fitted formula, `K_MIXER`). HSL is at
     most 0.67 (Lum Green −100).
   - `calibration._WB_GRAY_WEIGHT` sets the white-balance fit's balance of colors against grays.

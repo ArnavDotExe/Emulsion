@@ -527,6 +527,50 @@ redo-kit copies. Each pair was resolved by which one matches the collected sRGB 
 - Left: luminance wants a slightly smaller scale (about 0.13) than vibrance (about 0.2); worst
   HSL bake Lum Green −100 0.67.
 
+## White balance and exposure as gains on the scene scale
+
+Journey: as the maintainer, I want a look's temperature, tint and exposure to move colors as
+Lightroom does, because a film look's warmth is often its white balance, and the camera applies
+it to every frame.
+
+Three gains per white-balance bake were fitted to Lightroom's ProPhoto exports (`out/cal-exports-prophoto`)
+by mean ΔE, with each model below. Mean over the 12 Temperature and Tint bakes:
+
+| Channels, domain | Mean ΔE | Temperature −100 |
+|---|---|---|
+| Bradford cones, hue-preserving scene scale (`_to_scene`) | **0.67** | 1.31 |
+| CAT02 cones, scene scale | 1.13 | 2.80 |
+| Bradford cones, stretch on cone values (hue-preserving) | 1.46 | 5.89 |
+| The previous model (per-channel shoulder + fitted hue preservation) | 2.14 | 6.20 |
+| CAT16 / Hunt-Pointer-Estevez / XYZ, scene scale | 2.17 / 2.57 / 3.45 | 8.2 / 10.0 / 11.3 |
+
+- Lightroom scales scene-linear values. Each color goes to the scene scale (the shoulder's stretch
+  applied to its min and max, middle kept in place), then into Bradford cone space, where each
+  cone is multiplied by `2 ** (strength * stops)`, and back.
+- Equal stops in every channel are exposure, which became the same gain: Exposure bakes 0.87 → 0.51.
+- The measured hue preservation per amount (`temperature_hue`/`tint_hue`) is gone. It was compensating
+  for applying the stops on the wrong scale. Older response files that hold it still load.
+- The stops were re-measured from the bakes (`calibration response`). The fitted gains agree with
+  the ProPhoto fit to within 0.03 stops, except Temperature −100's red cone (0.10 vs 0.08).
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Equal stops in either space are exposure; working-space stops scale each scene channel; black and white stay | `test_pipeline.py::test_white_balance_and_exposure_are_gains_on_the_scene_scale` | PASS |
+| 2 | Exposure keeps the hue of linear values | `test_exposure_keeps_the_hue_of_linear_values` | PASS |
+| 3 | Four saturated-color Lightroom fixtures (Temperature ±100, Tint +100, Exposure +2) | `test_render_white_balance_and_exposure_match_lightroom_on_saturated_colors` | PASS |
+| 4 | No hue tables; older files with them load | `test_response.py::test_white_balance_has_no_hue_tables_and_older_files_with_them_still_load` | PASS |
+| 5 | Calibration recovers stops on the scene scale | `test_calibration.py::test_measure_response_recovers_white_balance_stops_on_the_scene_scale` | PASS |
+| 6 | WB bakes under 0.75, each under 1.6; Exposure under 0.56, each under 1.0; presets mean ≤ 1.43 (local) | `tests/private/test_wb_exposure_vs_bakes.py`, `test_pipeline_vs_lightroom.py` | PASS |
+
+- RED `722fbfb`: 8 public tests failed (fixtures off by up to 0.156, exposure hue drifting, hue
+  tables present). Private: Temperature −100 5.88, Exposure +2 1.76.
+- GREEN: 424 pass (412 public), coverage 98%.
+- `test_tone_stages_keep_each_colors_hue` no longer lists exposure, since it keeps linear hue, not
+  encoded hue.
+- WB bakes 2.08 → 0.70 (Temperature −100 5.88 → 1.48, +100 3.07 → 1.06, Tint ±100 1.0);
+  Exposure 0.87 → 0.51 (+2 1.76 → 0.86); all 147 bakes 0.65 → 0.52.
+- Private presets: median 0.88, mean 1.40 → 1.38.
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one

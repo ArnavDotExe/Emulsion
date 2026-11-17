@@ -153,31 +153,22 @@ def _table_at(table: Mapping[float, np.ndarray], amount: float) -> np.ndarray:
 
 @dataclass(frozen=True, eq=False)
 class WhiteBalanceResponse:
-    """Incremental temperature/tint as stops per channel on the exposure shoulder.
+    """Incremental temperature/tint as stops per channel, gains on the scene scale.
 
-    On a rendered image Lightroom brightens each channel along the same shoulder as
-    exposure, so white stays white. Temperature and tint add in stops. ``space`` names the
-    channels: ``"working"`` (R, G, B of the working space) or ``"bradford"`` (the Bradford
-    cone responses, scaled so white is 1, 1, 1: a von Kries-style adaptation).
-    ``temperature_hue`` and ``tint_hue`` are the measured hue preservation per amount (see
-    ``hue_preservation``); empty tables mean per channel everywhere.
+    On a rendered image Lightroom scales each channel's scene value (the exposure shoulder's
+    stretch, see ``pipeline.white_balance_stops``), so white stays white. Temperature and tint
+    add in stops. ``space`` names the channels: ``"working"`` (R, G, B of the working space) or
+    ``"bradford"`` (the Bradford cone responses, scaled so white is 1, 1, 1: a von Kries
+    adaptation).
     """
 
     temperature: Mapping[float, np.ndarray]
     tint: Mapping[float, np.ndarray]
     space: str = "working"
-    temperature_hue: Mapping[float, float] = field(default_factory=dict)
-    tint_hue: Mapping[float, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.space not in WB_SPACES:
             raise ColorlabError(f"white balance space {self.space!r} is not one of {', '.join(WB_SPACES)}")
-        for name in ("temperature_hue", "tint_hue"):
-            table = {float(a): float(v) for a, v in getattr(self, name).items()}
-            bad = {a: v for a, v in table.items() if not 0.0 <= v <= 1.0}
-            if bad:
-                raise ColorlabError(f"white balance {name} must be in [0, 1]; got {bad}")
-            object.__setattr__(self, name, table)
         object.__setattr__(self, "temperature", _as_float_map(self.temperature, 3, "temperature stops"))
         object.__setattr__(self, "tint", _as_float_map(self.tint, 3, "tint stops"))
 
@@ -188,19 +179,6 @@ class WhiteBalanceResponse:
         if tint:
             out = out + _table_at(self.tint, tint)
         return out
-
-    def hue_preservation(self, temperature: float = 0.0, tint: float = 0.0) -> float:
-        """How far each pixel's middle channel follows its place between the largest and smallest
-        channel (0: its own rolloff, 1: the RGB-tone method; see ``pipeline.white_balance_stops``).
-
-        Linear between measured amounts and 0 at a zero slider, so no change stays no change. With
-        both sliders moved it is the larger of the two, since no combined bakes measure the mix.
-        """
-        def at(table: Mapping[float, float], amount: float) -> float:
-            if not table or not amount:
-                return 0.0
-            return float(_table_at({a: np.array([v]) for a, v in table.items()}, amount)[0])
-        return max(at(self.temperature_hue, temperature), at(self.tint_hue, tint))
 
 
 # --- the whole set --------------------------------------------------------------------------------
@@ -222,10 +200,6 @@ class Response:
             "tone": {key: table(self.tone[key].curves, 6) for key in TONE_KEYS},
             "white_balance": {
                 "space": self.white_balance.space,
-                "hue_preservation": {
-                    "temperature": {f"{a:g}": round(v, 4) for a, v in sorted(self.white_balance.temperature_hue.items())},
-                    "tint": {f"{a:g}": round(v, 4) for a, v in sorted(self.white_balance.tint_hue.items())},
-                },
                 "temperature": table(self.white_balance.temperature, 5),
                 "tint": table(self.white_balance.tint, 5),
             },
@@ -243,14 +217,11 @@ class Response:
             def table(d: Mapping[str, list[float]]) -> dict[float, np.ndarray]:
                 return {float(a): np.asarray(v, dtype=np.float64) for a, v in d.items()}
 
-            wb = data["white_balance"]  # older files also hold a vibrance table, now unused
-            hue = wb.get("hue_preservation")
-            hue = hue if isinstance(hue, Mapping) else {}  # older files: per channel
+            # older files also hold a vibrance table and white-balance hue preservation, now unused
+            wb = data["white_balance"]
             return cls(
                 white_balance=WhiteBalanceResponse(table(wb["temperature"]), table(wb["tint"]),
-                                                   space=wb.get("space", "working"),
-                                                   temperature_hue=hue.get("temperature", {}),
-                                                   tint_hue=hue.get("tint", {})),
+                                                   space=wb.get("space", "working")),
                 exposure=ExposureShoulder(float(data["exposure"]["shoulder"]), float(data["exposure"]["strength"])),
                 tone={k: CurveFamily(table(data["tone"][k])) for k in TONE_KEYS},
             )

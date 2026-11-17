@@ -669,9 +669,8 @@ def _place(rgb):
     return (s[..., 1] - s[..., 0]) / (s[..., 2] - s[..., 0])
 
 
+# exposure keeps the hue of the linear values instead (test_exposure_keeps_the_hue_of_linear_values)
 @pytest.mark.parametrize("stage", [
-    lambda e: exposure(e, 1.0),
-    lambda e: exposure(e, -1.0),
     lambda e: tone(e, contrast=60),
     lambda e: tone(e, whites=100, blacks=-50),
     lambda e: parametric_curve(e, darks=80, lights=-60),

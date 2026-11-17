@@ -49,11 +49,6 @@ WB_SPACE = "bradford"
 #: weight of the gray-ramp error next to the color-grid error in the white-balance refine. Over the
 #: 12 bakes, 0 gives colors 3.02 / grays 2.32 dE; 1 gives 3.23 / 1.37 (working space was 3.88 / 1.45)
 _WB_GRAY_WEIGHT = 1.0
-#: hue preservation tried per white-balance bake (``WhiteBalanceResponse.hue_preservation``), with the
-#: stops refitted at each. One value for every amount can't fit: the best grows with the amount (0-0.375
-#: at +-25, 0.5-1 at +-100), and a constant 0.5 took Tint +-25 from 0.6 to 1.8 dE
-_WB_HUE_GRID = tuple(float(h) for h in np.linspace(0.0, 1.0, 9))
-
 _WB_KEYS = (("Temperature", "IncrementalTemperature", "IncrementalTint"),
             ("Tint", "IncrementalTint", "IncrementalTemperature"))
 
@@ -336,15 +331,13 @@ def _nelder_mead(cost: Callable[[np.ndarray], float], x0: np.ndarray, step: floa
 
 
 def _white_balance_stops(lut: Lut3D, shoulder: response.ExposureShoulder, space: str = WB_SPACE,
-                         grid_size: int = 17) -> tuple[np.ndarray, float]:
-    """Stops per white-balance channel (``space``) on the exposure shoulder for one bake, and the
-    hue preservation that goes with them.
+                         grid_size: int = 17) -> np.ndarray:
+    """Stops per white-balance channel (``space``) on the exposure shoulder for one bake.
 
     Starts from the median over a neutral ramp, away from black, white and any clipped output
-    (a channel without such samples is NaN: not measurable from this bake, returned with hue
-    preservation 0). Then, for each hue preservation in ``_WB_HUE_GRID``, refines all three stops
-    by mean CIEDE2000 over a ``grid_size``^3 sRGB grid plus the same over a gray ramp
-    (``_WB_GRAY_WEIGHT``: colors alone would pull the neutrals off), and keeps the best pair.
+    (a channel without such samples is NaN: not measurable from this bake). Then refines all three
+    stops by mean CIEDE2000 over a ``grid_size``^3 sRGB grid plus the same over a gray ramp
+    (``_WB_GRAY_WEIGHT``: colors alone would pull the neutrals off).
     """
     ramp = np.repeat(response.X[:, None], 3, axis=1)
     baked = apply_lut(lut, ramp).astype(np.float64)
@@ -358,23 +351,19 @@ def _white_balance_stops(lut: Lut3D, shoulder: response.ExposureShoulder, space:
         if ok.any():
             stops[ch] = float(np.median(shoulder.stops(ramp[ok, ch], out[ok, ch])))
     if np.isnan(stops).any():
-        return np.round(stops, 4), 0.0
+        return np.round(stops, 4)
     grid = Lut3D.identity(grid_size).table.reshape(-1, 3).astype(np.float64)
     grays = np.repeat(np.linspace(0.0, 1.0, 65)[:, None], 3, axis=1)
     sets = [(_to_working(x), srgb_to_lab(apply_lut(lut, x).astype(np.float64)), w)
             for x, w in ((grid, 1.0), (grays, _WB_GRAY_WEIGHT))]
 
-    def cost(evs: np.ndarray, hue: float) -> float:
+    def cost(evs: np.ndarray) -> float:
         return sum(w * float(delta_e_2000(srgb_to_lab(_from_working(
-            pipeline.white_balance_stops(src, evs, space, shoulder, hue))), lab_ref).mean())
+            pipeline.white_balance_stops(src, evs, space, shoulder))), lab_ref).mean())
             for src, lab_ref, w in sets)
 
-    best_err, best_evs, best_hue = np.inf, stops, 0.0
-    for hue in _WB_HUE_GRID:  # each starts from the best stops so far
-        evs, err = _nelder_mead(lambda e, hue=hue: cost(e, hue), best_evs, step=0.1)
-        if err < best_err:
-            best_err, best_evs, best_hue = err, evs, hue
-    return np.round(best_evs, 4), round(best_hue, 4)
+    evs, _ = _nelder_mead(cost, stops, step=0.1)
+    return np.round(evs, 4)
 
 
 def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS,
@@ -417,25 +406,20 @@ def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS
         report.measured.append("Exposure2012")
     else:
         report.kept.append("Exposure2012")
-    wb_tables, hue_tables = {}, {}
+    wb_tables = {}
     for _label, key, partner in _WB_KEYS:
         found = {float(v.settings[key]): luts[v.name] for v in variants
                  if v.name in luts and v.settings.get(partner) == "0" and float(v.settings.get(key, 0)) != 0}
         base_table = base.white_balance.temperature if key == "IncrementalTemperature" else base.white_balance.tint
-        base_hue = (base.white_balance.temperature_hue if key == "IncrementalTemperature"
-                    else base.white_balance.tint_hue)
         if base.white_balance.space != WB_SPACE:
             fallback = f"base stops are for {base.white_balance.space!r} channels, not {WB_SPACE!r}"
         else:
             fallback = ""
         if found:
-            wb_tables[key], hue_tables[key] = {}, {}
+            wb_tables[key] = {}
             for a, lut in found.items():
-                stops, hue_tables[key][a] = _white_balance_stops(lut, exposure)
+                stops = _white_balance_stops(lut, exposure)
                 if np.isnan(stops).any():
-                    if base_hue:
-                        hue_tables[key][a] = float(response._table_at(
-                            {b: np.array([v]) for b, v in base_hue.items()}, a)[0])
                     lost = ", ".join("RGB"[ch] for ch in np.flatnonzero(np.isnan(stops)))
                     report.warnings.append(f"{key} {a:+g}: no usable samples for {lost}; kept the base stops"
                                            + (f" ({fallback})" if fallback else ""))
@@ -443,13 +427,12 @@ def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS
                 wb_tables[key][a] = stops
             report.measured.append(key)
         else:
-            wb_tables[key], hue_tables[key] = base_table, base_hue
+            wb_tables[key] = base_table
             report.kept.append(key)
             if fallback:
                 report.warnings.append(f"{key}: no bakes and the {fallback}; re-measure from a full set of bakes")
     white_balance = response.WhiteBalanceResponse(
-        wb_tables["IncrementalTemperature"], wb_tables["IncrementalTint"], space=WB_SPACE,
-        temperature_hue=hue_tables["IncrementalTemperature"], tint_hue=hue_tables["IncrementalTint"])
+        wb_tables["IncrementalTemperature"], wb_tables["IncrementalTint"], space=WB_SPACE)
     report.response = response.Response(exposure=exposure, tone=tone, white_balance=white_balance)
     return report
 

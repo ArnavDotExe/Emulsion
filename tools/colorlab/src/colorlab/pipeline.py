@@ -164,73 +164,51 @@ def apply_curves(rgb: np.ndarray, master: Curve = IDENTITY_CURVE, red: Curve = I
 # --- white balance, exposure and tone (encoded, measured shapes) -----------------------------
 
 def white_balance(enc: np.ndarray, temperature: float = 0.0, tint: float = 0.0) -> np.ndarray:
-    """Incremental temperature/tint (-100..100): Lightroom's measured stops per channel on the
-    exposure shoulder, so black and white stay put."""
+    """Incremental temperature/tint (-100..100): Lightroom's measured stops per Bradford cone,
+    as gains on the scene scale (see :func:`white_balance_stops`), so black and white stay put."""
     _check("temperature", temperature, -100, 100)
     _check("tint", tint, -100, 100)
     enc = _as_rgb(enc)
     if temperature == 0 and tint == 0:
         return enc
     wb = _response().white_balance
-    return white_balance_stops(enc, wb.evs(temperature, tint), wb.space, hue_preservation=wb.hue_preservation(temperature, tint))
+    return white_balance_stops(enc, wb.evs(temperature, tint), wb.space)
 
 
 def white_balance_stops(enc: np.ndarray, evs: np.ndarray, space: str = "working",
-                        shoulder: response.ExposureShoulder | None = None,
-                        hue_preservation: float = 0.0) -> np.ndarray:
-    """Per-channel stops ``evs`` on the exposure shoulder (default: the shipped one), in the
-    working space's channels or in Bradford cone space (``response.WB_SPACES``).
+                        shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
+    """Per-channel stops ``evs`` as gains on the scene scale (:func:`_to_scene`, on ``shoulder``,
+    default the shipped one), in the working space's channels or in Bradford cone space
+    (``response.WB_SPACES``; cones scaled so white is 1, 1, 1: a von Kries adaptation).
 
-    In cone space each pixel goes to linear cone responses (white = 1, 1, 1), is encoded with
-    the working curve (odd-symmetric, so slightly negative cones survive), gets its stops, and
-    comes back. Black and white stay put either way.
-
-    The stops are gains on the shoulder's stretched scale. Each pixel's largest and smallest
-    channel always roll off on their own; ``hue_preservation`` (0..1) blends the middle channel
-    from its own rolloff toward its place between them on the stretched scale (the RGB-tone
-    method), which keeps saturated colors from mixing.
+    A stop is ``2 ** shoulder.strength`` on the scene scale, as for exposure, so equal stops in
+    every channel are exposure. Black stays black and white stays white.
     """
     if space not in response.WB_SPACES:
         raise ParameterError(f"white balance space {space!r} is not one of {', '.join(response.WB_SPACES)}")
-    _check("hue_preservation", hue_preservation, 0.0, 1.0)
     enc = _as_rgb(enc)
     evs = np.asarray(evs, dtype=np.float64)
     if not np.any(evs):
         return enc
     shoulder = shoulder if shoulder is not None else _response().exposure
-    if space == "working":
-        return _rolloff_stops(enc, evs, shoulder, hue_preservation)
-    cones = cs.encode(cs.decode(enc, WORKING_TRANSFER) @ _CONES.T, WORKING_TRANSFER)
-    moved = np.sign(cones) * _rolloff_stops(np.minimum(np.abs(cones), 1.0), evs, shoulder, hue_preservation)
-    return cs.encode(cs.decode(moved, WORKING_TRANSFER) @ _CONES_INV.T, WORKING_TRANSFER)
-
-
-def _rolloff_stops(x: np.ndarray, evs: np.ndarray, shoulder: response.ExposureShoulder,
-                   hue_preservation: float) -> np.ndarray:
-    """``evs`` per channel on the shoulder, with the middle channel partly placed (see above)."""
-    out = shoulder.apply(x, evs)
-    if not hue_preservation:
-        return out
-    z = shoulder.stretch(x) * 2.0 ** (shoulder.strength * evs)
-    i_hi, i_lo = z.argmax(axis=-1)[..., None], z.argmin(axis=-1)[..., None]
-    z_hi, z_lo = np.take_along_axis(z, i_hi, -1), np.take_along_axis(z, i_lo, -1)
-    o_hi, o_lo = np.take_along_axis(out, i_hi, -1), np.take_along_axis(out, i_lo, -1)
-    span = z_hi - z_lo
-    with np.errstate(invalid="ignore", over="ignore"):  # a channel at 1 stretches to a huge value
-        place = np.nan_to_num((z - z_lo) / np.where(span > 0, span, 1.0))
-    placed = o_lo + place * (o_hi - o_lo)
-    return out + hue_preservation * (placed - out)
+    gains = 2.0 ** (shoulder.strength * evs)
+    scene = _to_scene(enc, shoulder)
+    if space == "bradford":
+        scene = (scene @ _CONES.T * gains) @ _CONES_INV.T
+    else:
+        scene = scene * gains
+    return _from_scene(scene, shoulder)
 
 
 def exposure(enc: np.ndarray, ev: float) -> np.ndarray:
-    """Exposure in stops (-5..5): Lightroom's shoulder, which keeps white and never clips,
-    applied hue-preservingly (``rgb_tone``)."""
+    """Exposure in stops (-5..5): a gain on the scene scale, so it rolls off along Lightroom's
+    shoulder, keeps white, never clips and keeps the hue of the linear values."""
     _check("exposure", ev, -5, 5)
     enc = _as_rgb(enc)
     if ev == 0:
         return enc
     shoulder = _response().exposure
-    return rgb_tone(enc, lambda v: shoulder.apply(v, ev))
+    return _from_scene(_to_scene(enc, shoulder) * 2.0 ** (shoulder.strength * ev), shoulder)
 
 
 def tone(enc: np.ndarray, contrast: float = 0.0, whites: float = 0.0, blacks: float = 0.0) -> np.ndarray:
@@ -344,22 +322,22 @@ def hsl_adjust(enc: np.ndarray, hue: Mapping[str, float] | None = None,
     return _from_scene(_from_mmh(lo, hi, h, smooth) / K_SCENE)
 
 
-def _to_scene(enc: np.ndarray) -> np.ndarray:
+def _to_scene(enc: np.ndarray, shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
     """Working-encoded values -> the scene-linear values Lightroom's color sliders work on.
 
     The exposure shoulder's stretch, applied as Lightroom applies its tone curve: to each color's
     largest and smallest channel, with the middle one kept in place (:func:`rgb_tone`). So a
     color's hexcone hue stays that of its linear values; stretching each channel on its own
-    would bend the hue of saturated colors.
+    would bend the hue of saturated colors. ``shoulder`` defaults to the shipped one.
     """
-    stretch = _response().exposure.stretch
+    stretch = (shoulder if shoulder is not None else _response().exposure).stretch
     return rgb_tone(cs.decode(enc, WORKING_TRANSFER),
                     lambda x: stretch(cs.encode(np.maximum(x, 0.0), WORKING_TRANSFER)))
 
 
-def _from_scene(scene: np.ndarray) -> np.ndarray:
+def _from_scene(scene: np.ndarray, shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
     """The inverse of :func:`_to_scene`."""
-    rolloff = _response().exposure.rolloff
+    rolloff = (shoulder if shoulder is not None else _response().exposure).rolloff
     lin = rgb_tone(np.maximum(scene, 0.0), lambda y: cs.decode(rolloff(y), WORKING_TRANSFER))
     return cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
 
