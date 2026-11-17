@@ -593,6 +593,47 @@ def test_grayscale_is_neutral_and_mixer_brightens_its_band():
     assert grayscale(RED, {"red": 60})[0] > grayscale(RED)[0]
 
 
+BAND_DEGREES = {"red": 0, "orange": 30, "yellow": 55, "green": 95, "aqua": 160, "blue": 230,
+                "purple": 275, "magenta": 330}
+
+
+@pytest.mark.parametrize("band", list(BAND_DEGREES))
+def test_neutral_mix_gives_scene_luminance_at_each_band_center(band):
+    from colorlab.pipeline import _TINT_LUMA
+    color = scene_color(BAND_DEGREES[band], sat=0.7, value=0.6)
+    out = grayscale(color)
+    np.testing.assert_allclose(out, out[0], atol=1e-12)
+    np.testing.assert_allclose(scene(out)[0], scene(color) @ np.array(_TINT_LUMA), rtol=1e-6)
+
+
+def test_mixer_plus_100_adds_two_and_a_quarter_gaps_and_minus_100_darkens_smoothly():
+    from colorlab.pipeline import K_SCENE, _TINT_LUMA
+    color = scene_color(30, sat=0.5, value=0.08)  # orange, dim enough not to clip
+    x = scene(color) * K_SCENE
+    lo, hi = x.min(), x.max()
+    lum = x @ np.array(_TINT_LUMA)
+    up = scene(grayscale(color, {"orange": 100}))[0] * K_SCENE
+    np.testing.assert_allclose(up, lum + 2.25 * (hi - lo), rtol=1e-6)
+    darker = [scene(grayscale(color, {"orange": a}))[0] for a in (0, -25, -50, -75, -100)]
+    assert all(a > b for a, b in zip(darker, darker[1:])) and darker[-1] >= 0.0
+    np.testing.assert_allclose(grayscale(GRAYS, {"orange": -100, "blue": 100}), GRAYS, atol=1e-12)
+
+
+# Lightroom bakes at saturated colors (sRGB in and out)
+@pytest.mark.parametrize("band,rgb,expected,tol", [
+    (None, [0.2, 0.3, 0.9], 0.477, 0.015),
+    ("Yellow", [0.85, 0.5, 0.1], 0.655, 0.01),
+    ("Blue", [0.6, 0.2, 0.7], 0.463, 0.01),
+    ("Red", [0.9, 0.25, 0.2], 0.827, 0.015),
+])
+def test_render_bw_mixer_matches_lightroom(band, rgb, expected, tol):
+    settings = {"ConvertToGrayscale": "True", **{f"GrayMixer{b.capitalize()}": "0" for b in BAND_DEGREES}}
+    if band:
+        settings[f"GrayMixer{band}"] = "+100"
+    out = render(parse_preset(make_xmp(settings)), np.array([rgb]))[0]
+    np.testing.assert_allclose(out, expected, atol=tol)
+
+
 # --- render ------------------------------------------------------------------------------------------
 
 def grid(n=9):

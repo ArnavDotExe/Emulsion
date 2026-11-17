@@ -139,27 +139,30 @@ def fake_lightroom(tmp_path, variants, **true_strengths):
     return tmp_path
 
 
+def vibrance_variants():
+    return [v for v in variants_fitting("K_SCENE") if "Vibrance" in v.name]
+
+
 def test_fit_recovers_known_strengths(tmp_path):
-    variants = [v for v in variants_fitting("K_SCENE") if "Vibrance" in v.name] + variants_fitting("K_MIXER")
-    luts = fake_lightroom(tmp_path, variants, K_SCENE=0.3, K_MIXER=1.2)
+    variants = vibrance_variants()
+    luts = fake_lightroom(tmp_path, variants, K_SCENE=0.3)
     report = fit(luts, variants=variants, grid_size=9)
-    assert report.constants["K_SCENE"] == pytest.approx(0.3, rel=0.02)
-    assert report.constants["K_MIXER"] == pytest.approx(1.2, rel=0.02)
+    assert report.constants == {"K_SCENE": pytest.approx(0.3, rel=0.02)}
     for v in variants:
         assert report.after[v.name] < 0.05 <= report.before[v.name]
 
 
 def test_fit_restores_the_pipeline_strengths(tmp_path):
-    variants = variants_fitting("K_MIXER")
+    variants = vibrance_variants()
     before = {k: getattr(pipeline, k) for k in K_BOUNDS}
-    fit(fake_lightroom(tmp_path, variants, K_MIXER=0.9), variants=variants, grid_size=9)
+    fit(fake_lightroom(tmp_path, variants, K_SCENE=0.25), variants=variants, grid_size=9)
     assert {k: getattr(pipeline, k) for k in K_BOUNDS} == before
 
 
 def test_fit_reports_missing_bakes_and_scores_unfitted_variants(tmp_path):
     exposure = [v for v in VARIANTS if "Exposure2012" in v.settings]
-    report = fit(fake_lightroom(tmp_path, exposure), variants=exposure + variants_fitting("K_MIXER"), grid_size=9)
-    assert set(report.missing) == {v.name for v in variants_fitting("K_MIXER")}
+    report = fit(fake_lightroom(tmp_path, exposure), variants=exposure + vibrance_variants(), grid_size=9)
+    assert set(report.missing) == {v.name for v in vibrance_variants()}
     assert report.constants == {}
     assert all(report.after[v.name] < 0.05 for v in exposure)
 
@@ -170,6 +173,13 @@ def test_hsl_and_vibrance_share_one_fitted_scene_scale():
     hsl = {v.name for v in VARIANTS if v.name.startswith("Cal HSL ")}
     assert len(hsl) == 48
     assert {v.name for v in variants_fitting("K_SCENE")} == hsl | {v.name for v in solo("Vibrance")}
+
+
+def test_bw_mixer_is_reconstructed_not_fitted():
+    assert not hasattr(pipeline, "K_MIXER") and "K_MIXER" not in K_BOUNDS
+    assert list(K_BOUNDS) == ["K_SCENE"]
+    bw = [v for v in VARIANTS if v.name.startswith("Cal BW")]
+    assert len(bw) == 9 and all(not v.fits for v in bw)  # the bakes stay as accuracy checks
 
 
 def test_color_grading_is_reconstructed_not_fitted():
@@ -184,13 +194,13 @@ def test_cli_presets_and_fit(tmp_path, capsys):
     assert main(["presets", str(tmp_path / "cal")]) == 0
     assert f"wrote {len(VARIANTS)} calibration preset" in capsys.readouterr().out
     (tmp_path / "luts").mkdir()
-    luts = fake_lightroom(tmp_path / "luts", variants_fitting("K_MIXER"), K_MIXER=1.3)
+    luts = fake_lightroom(tmp_path / "luts", vibrance_variants(), K_SCENE=0.3)
     out_json = tmp_path / "fit.json"
     assert main(["fit", str(luts), "--grid", "9", "--json", str(out_json)]) == 0
     text = capsys.readouterr().out
-    assert "K_MIXER = 1.3" in text and f"missing {len(VARIANTS) - len(variants_fitting('K_MIXER'))}" in text
+    assert "K_SCENE = " in text and f"missing {len(VARIANTS) - len(vibrance_variants())}" in text
     data = json.loads(out_json.read_text(encoding="utf-8"))
-    assert data["constants"]["K_MIXER"] == pytest.approx(1.3, rel=0.02)
+    assert data["constants"]["K_SCENE"] == pytest.approx(0.3, rel=0.02)
 
 
 def test_cli_fit_without_any_bakes_fails(tmp_path, capsys):
