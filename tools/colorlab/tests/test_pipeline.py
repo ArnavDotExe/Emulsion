@@ -271,6 +271,96 @@ def test_hsl_hue_and_luminance_move_the_right_way():
     assert luma(brighter_blue) > luma(BLUE)
 
 
+def scene_color(hue_deg, sat=0.6, value=0.5):
+    """A working-encoded color whose hexcone hue on the HSL stage's scene scale is ``hue_deg``."""
+    import colorsys
+    from colorlab.pipeline import K_SCENE, _response
+    rgb = np.array(colorsys.hsv_to_rgb(hue_deg / 360, sat, value))
+    return _response().exposure.rolloff(rgb / K_SCENE)
+
+
+def scene_hsv(enc):
+    import colorsys
+    from colorlab.pipeline import K_SCENE, _response
+    h, s, v = colorsys.rgb_to_hsv(*(_response().exposure.stretch(np.asarray(enc, dtype=np.float64)) * K_SCENE))
+    return h * 360, s, v
+
+
+def test_hsl_band_centers_are_lightrooms():
+    from colorlab.pipeline import HSL_CENTERS
+    assert tuple(HSL_CENTERS) == (0, 30, 55, 95, 160, 230, 275, 330)
+
+
+@pytest.mark.parametrize("band,amount,start,end", [
+    ("red", 100, 0, 30),          # toward orange by max(0.9 * 30, 30) degrees
+    ("blue", -100, 230, 167),     # toward aqua by 0.9 * 70
+    ("green", 100, 95, 153.5),    # toward aqua by 0.9 * 65
+    ("magenta", 100, 330, 360),   # toward red, wrapping
+])
+def test_hsl_hue_moves_a_band_center_by_lightrooms_offset(band, amount, start, end):
+    h, s, v = scene_hsv(hsl_adjust(scene_color(start), hue={band: amount}))
+    assert h % 360 == pytest.approx(end % 360, abs=0.02)
+    assert (s, v) == pytest.approx(scene_hsv(scene_color(start))[1:], abs=1e-9)
+
+
+def test_hsl_band_values_fall_off_linearly_between_centers():
+    at_green = scene_color(95)
+    np.testing.assert_allclose(hsl_adjust(at_green, saturation={"yellow": -100}), at_green, atol=1e-12)
+    between = scene_color(75)  # halfway from yellow (55) to green (95): half of Yellow -100
+    s0, s1 = scene_hsv(between)[1], scene_hsv(hsl_adjust(between, saturation={"yellow": -100}))[1]
+    lo, hi = 0.5 * (1 - s0), 0.5  # the scene min and max of ``between``
+    mid = (lo + hi) / 2
+    expected_gap = (hi - lo) * 0.5  # both ends move half way to the middle
+    assert s1 == pytest.approx(expected_gap / (mid + expected_gap / 2), abs=1e-6)
+
+
+def test_hsl_saturation_minus_100_at_a_band_center_gives_gray():
+    h, s, v = scene_hsv(hsl_adjust(scene_color(160), saturation={"aqua": -100}))
+    assert s == pytest.approx(0, abs=1e-9)
+
+
+def test_hsl_luminance_keeps_the_scene_hue_and_moves_the_right_way():
+    orange = scene_color(30)
+    up, down = (scene_hsv(hsl_adjust(orange, luminance={"orange": a})) for a in (100, -100))
+    h0, _, v0 = scene_hsv(orange)
+    assert up[0] == pytest.approx(h0, abs=1e-6) and down[0] == pytest.approx(h0, abs=1e-6)
+    assert down[2] < v0 < up[2]
+
+
+def test_hsl_models_round_trip():
+    from colorlab.pipeline import _from_mmh, _to_mmh
+    x = np.random.default_rng(3).random((500, 3))
+    for smooth in (False, True):
+        lo, hi, h, gap = _to_mmh(x, smooth)
+        np.testing.assert_allclose(_from_mmh(lo, hi, h, smooth), x, atol=1e-12)
+
+
+def test_process_version_15_4_uses_spline_tables_and_the_smooth_hue_model():
+    def r(settings, pv):
+        return render(parse_preset(make_xmp({**settings, "ProcessVersion": pv})), SV_SAMPLES)
+    for settings in ({"SaturationAdjustmentYellow": "-100"}, {"Vibrance": "+60"}):
+        assert np.abs(r(settings, "15.4") - r(settings, "11.0")).max() > 1e-3, settings
+    plain = {"Exposure2012": "+0.5"}
+    np.testing.assert_array_equal(r(plain, "15.4"), r(plain, "11.0"))
+    every = {f"SaturationAdjustment{b.capitalize()}": "-80" for b in BANDS}
+    np.testing.assert_allclose(render(parse_preset(make_xmp({**every, "ProcessVersion": "15.4"})), GRAYS),
+                               GRAYS, atol=2e-6)
+
+
+# Lightroom bakes of the calibration presets (process version 11), sRGB in and out, in gamut
+HSL_SAMPLES = np.array([[0.35, 0.4, 0.55], [0.6, 0.5, 0.3], [0.55, 0.45, 0.42], [0.4, 0.55, 0.45]])
+
+
+@pytest.mark.parametrize("settings,expected", [
+    ({"HueAdjustmentBlue": "-100"}, [[0.198, 0.531, 0.537], [0.6, 0.5, 0.3], [0.55, 0.45, 0.42], [0.4, 0.55, 0.45]]),
+    ({"SaturationAdjustmentGreen": "-100"}, [[0.35, 0.4, 0.55], [0.6, 0.5, 0.3], [0.55, 0.45, 0.42], [0.464, 0.52, 0.481]]),
+    ({"LuminanceAdjustmentOrange": "-100"}, [[0.35, 0.4, 0.55], [0.538, 0.446, 0.26], [0.458, 0.37, 0.344], [0.4, 0.55, 0.45]]),
+    ({"HueAdjustmentYellow": "+100"}, [[0.35, 0.4, 0.55], [0.5, 0.546, 0.292], [0.55, 0.45, 0.42], [0.4, 0.55, 0.45]]),
+])
+def test_render_hsl_matches_lightroom(settings, expected):
+    np.testing.assert_allclose(render(parse_preset(make_xmp(settings)), HSL_SAMPLES), expected, atol=0.015)
+
+
 def test_hsl_rejects_unknown_band():
     with pytest.raises(ParameterError, match="teal"):
         hsl_adjust(RED, saturation={"teal": 10})
