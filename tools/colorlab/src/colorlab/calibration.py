@@ -7,7 +7,7 @@
     python -m colorlab.calibration fit out/cal-luts --json out/cal-fit.json
 
 Each calibration preset moves exactly one slider. ``response`` measures the
-shapes of exposure, the tone sliders, the parametric curve and vibrance straight
+shapes of white balance, exposure, the tone sliders and the parametric curve straight
 from their bakes (``colorlab.response``). ``fit`` then fits each remaining
 ``K_*`` strength in ``colorlab.pipeline`` only from the bakes that exercise it,
 and reports the remaining error per preset, which shows where a stage's *shape*
@@ -42,6 +42,7 @@ K_BOUNDS: dict[str, tuple[float, float]] = {
     "K_HUE": (0.0, 1.0),
     "K_LUMINANCE": (0.0, 1.5),
     "K_MIXER": (0.0, 3.0),
+    "K_VIBRANCE": (0.05, 1.0),
 }
 
 #: channels the measured white balance moves (``response.WB_SPACES``): Bradford cones fit the
@@ -79,7 +80,7 @@ def _sweep(label: str, key: str, values: Sequence[float], fits: tuple[str, ...] 
 
 def _build() -> tuple[Variant, ...]:
     out: list[Variant] = []
-    # White balance, exposure, tone, parametric and vibrance shapes are measured (`response`).
+    # White balance, exposure, tone and parametric shapes are measured (`response`).
     out += _sweep("Exposure", "Exposure2012", (-2, -1, -0.5, 0.5, 1, 2))
     for label, key in (("Contrast", "Contrast2012"), ("Whites", "Whites2012"), ("Blacks", "Blacks2012")):
         out += _sweep(label, key, (-100, -50, -25, 25, 50, 100))
@@ -104,7 +105,7 @@ def _build() -> tuple[Variant, ...]:
         out += _sweep(f"HSL Sat {b}", f"SaturationAdjustment{b}", (-100, 100))
         out += _sweep(f"HSL Lum {b}", f"LuminanceAdjustment{b}", (-100, 100), ("K_LUMINANCE",))
     out += _sweep("Saturation", "Saturation", (-100, -50, 50, 100))
-    out += _sweep("Vibrance", "Vibrance", (-100, -50, -25, 25, 50, 100))
+    out += _sweep("Vibrance", "Vibrance", (-100, -50, -25, 25, 50, 100), ("K_VIBRANCE",))
     zones = (("Shadows", "SplitToningShadowHue", "SplitToningShadowSaturation", "ColorGradeShadowLum"),
              ("Midtones", "ColorGradeMidtoneHue", "ColorGradeMidtoneSat", "ColorGradeMidtoneLum"),
              ("Highlights", "SplitToningHighlightHue", "SplitToningHighlightSaturation", "ColorGradeHighlightLum"),
@@ -255,8 +256,6 @@ def fit(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS, grid_size: 
 
 # --- measured responses -------------------------------------------------------------------------------
 
-_VIBRANCE_GRID = 17
-_PIVOTS = np.linspace(0.0, 1.0, 21)
 
 
 @dataclass
@@ -298,24 +297,6 @@ def _to_working(srgb: np.ndarray) -> np.ndarray:
 def _from_working(enc: np.ndarray) -> np.ndarray:
     lin = cs.convert(cs.decode(enc, pipeline.WORKING_TRANSFER), pipeline.WORKING, cs.SRGB)
     return np.clip(cs.encode(lin, cs.Transfer.SRGB), 0.0, 1.0)
-
-
-def _vibrance_tables(knots: np.ndarray, c: np.ndarray, bw: np.ndarray, d: np.ndarray, delta: np.ndarray,
-                     ok: np.ndarray):
-    """Chroma gain per knot (median of per-color gains) and per-band factors on top of it.
-
-    ``ok`` marks the colors to learn from: colored, and not clipped in the bake.
-    """
-    ok = ok & (c > 0.01)
-    g = np.sum(delta * d, axis=1) / np.maximum(np.sum(d * d, axis=1), 1e-12)  # least-squares gain per color
-    table = np.array([np.median(g[m]) if (m := ok & (np.abs(c - k) < 0.075)).any() else np.nan for k in knots])
-    good = ~np.isnan(table)
-    table = np.interp(knots, knots[good], table[good]) if good.any() else np.ones_like(knots)
-    base = np.interp(c, knots, table) - 1.0
-    a = bw[ok] * base[ok, None]
-    bands, *_ = np.linalg.lstsq(a, g[ok] - 1.0, rcond=None)
-    bands = np.where(np.abs(a).sum(axis=0) > 1e-6, bands, 1.0)
-    return table, bands
 
 
 def _wb_channels(enc: np.ndarray) -> np.ndarray:
@@ -398,44 +379,9 @@ def _white_balance_stops(lut: Lut3D, shoulder: response.ExposureShoulder, space:
     return np.round(best_evs, 4), round(best_hue, 4)
 
 
-def _measure_vibrance(luts: Mapping[float, Lut3D], base: response.VibranceResponse) -> response.VibranceResponse:
-    grid = Lut3D.identity(_VIBRANCE_GRID).table.reshape(-1, 3).astype(np.float64)
-    wi = _to_working(grid)
-    h, c = pipeline._hue(wi)
-    bw = pipeline._band_weights(h)
-    knots = np.asarray(base.chroma)
-    baked = {a: apply_lut(lut, grid).astype(np.float64) for a, lut in luts.items()}
-    worked = {a: _to_working(v) for a, v in baked.items()}
-    unclipped = {a: np.all((v > 1e-4) & (v < 1 - 1e-4), axis=1) for a, v in baked.items()}
-    gains, bands, pivots = {}, {}, list(base.pivots)
-    for side, amounts in ((0, [a for a in baked if a < 0]), (1, [a for a in baked if a > 0])):
-        if not amounts:
-            continue
-        best = None
-        for alpha in _PIVOTS:
-            pivot = wi.min(axis=1) + alpha * c
-            d = wi - pivot[:, None]
-            tables, err = {}, 0.0
-            for a in amounts:
-                tab, fac = _vibrance_tables(knots, c, bw, d, worked[a] - pivot[:, None], unclipped[a])
-                gain = 1.0 + (np.interp(c, knots, tab) - 1.0) * (bw @ fac)
-                ours = _from_working(pivot[:, None] + np.maximum(gain, 0.0)[:, None] * d)
-                err += float(delta_e_2000(srgb_to_lab(ours), srgb_to_lab(baked[a])).mean())
-                tables[a] = (tab, fac)
-            if best is None or err < best[0]:
-                best = (err, float(alpha), tables)
-        pivots[side] = round(best[1], 4)
-        for a, (tab, fac) in best[2].items():
-            gains[a], bands[a] = tab, fac
-    for a in base.gains:  # keep the base's amounts on a side that was not baked
-        if not any(np.sign(a) == np.sign(b) for b in baked):
-            gains[a], bands[a] = base.gains[a], base.bands[a]
-    return response.VibranceResponse(tuple(knots), (pivots[0], pivots[1]), gains, bands)
-
-
 def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS,
                      base: response.Response | None = None) -> ResponseReport:
-    """Measure exposure, tone, parametric, vibrance and white-balance responses from the bakes in
+    """Measure exposure, tone, parametric and white-balance responses from the bakes in
     ``lut_dir``.
 
     Sliders without any bake keep their curves from ``base`` (default: the shipped response, or
@@ -473,12 +419,6 @@ def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS
         report.measured.append("Exposure2012")
     else:
         report.kept.append("Exposure2012")
-    vibrance = base.vibrance
-    if found := solo("Vibrance"):
-        vibrance = _measure_vibrance(found, base.vibrance)
-        report.measured.append("Vibrance")
-    else:
-        report.kept.append("Vibrance")
     wb_tables, hue_tables = {}, {}
     for _label, key, partner in _WB_KEYS:
         found = {float(v.settings[key]): luts[v.name] for v in variants
@@ -512,7 +452,7 @@ def measure_response(lut_dir: str | Path, variants: Sequence[Variant] = VARIANTS
     white_balance = response.WhiteBalanceResponse(
         wb_tables["IncrementalTemperature"], wb_tables["IncrementalTint"], space=WB_SPACE,
         temperature_hue=hue_tables["IncrementalTemperature"], tint_hue=hue_tables["IncrementalTint"])
-    report.response = response.Response(exposure=exposure, tone=tone, vibrance=vibrance, white_balance=white_balance)
+    report.response = response.Response(exposure=exposure, tone=tone, white_balance=white_balance)
     return report
 
 
@@ -529,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
     fp.add_argument("lut_dir", type=Path)
     fp.add_argument("--grid", type=int, default=17, help="sample grid size per axis (default 17)")
     fp.add_argument("--json", type=Path, help="also write the report as JSON")
-    rp = sub.add_parser("response", help="measure exposure/tone/parametric/vibrance/white-balance shapes from the bakes")
+    rp = sub.add_parser("response", help="measure exposure/tone/parametric/white-balance shapes from the bakes")
     rp.add_argument("lut_dir", type=Path)
     rp.add_argument("--out", type=Path, required=True,
                     help="response file to write (the shipped one is src/colorlab/data/lightroom_response.json)")

@@ -2,13 +2,15 @@
 
 Lightroom's exact formulas are not public. Every stage here is a plain, documented
 model with the properties a photographer expects: identity at default, endpoints
-held, tone curves monotonic. White balance, exposure, the tone sliders, the
-parametric curve and vibrance take their shapes from measured Lightroom responses
-(``colorlab.response``); the ``K_*`` strengths of the other stages are fitted to
-single-slider Lightroom bakes (``colorlab.calibration``).
+held, tone curves monotonic. White balance, exposure, the tone sliders and the
+parametric curve take their shapes from measured Lightroom responses
+(``colorlab.response``). Saturation, vibrance and color grading are reconstructions of
+Lightroom's behaviour, checked against its bakes; the ``K_*`` strengths of the other
+stages are fitted to single-slider Lightroom bakes (``colorlab.calibration``).
 
-Working space is ProPhoto RGB primaries. Every stage runs on sRGB-curve encoded
-values, the space Lightroom's tone curve panel shows. Spatial effects (grain,
+Working space is ProPhoto RGB primaries. Stages take and return sRGB-curve encoded
+values, the space Lightroom's tone curve panel shows; saturation and vibrance work
+inside on the exposure shoulder's stretched (scene-linear) scale, color grading on linear values. Spatial effects (grain,
 vignette, highlights/shadows, clarity, texture, dehaze, sharpening, noise reduction) belong to a later stage and
 are not applied here.
 """
@@ -37,7 +39,7 @@ _CONES = cs._BRADFORD @ WORKING.rgb_to_xyz
 _CONES = _CONES / (_CONES @ np.ones(3))[:, None]
 _CONES_INV = np.linalg.inv(_CONES)
 
-#: measured shapes of white balance, exposure, the tone sliders, the parametric curve and vibrance;
+#: measured shapes of white balance, exposure, the tone sliders and the parametric curve;
 #: read from the shipped file on first use, so a broken file never stops ``calibration`` from
 #: importing (and regenerating it)
 RESPONSE: response.Response | None = None
@@ -54,6 +56,7 @@ def _response() -> response.Response:
 K_HUE = 0.831  # fraction of the gap to the neighbouring band at hue 100
 K_LUMINANCE = 0.708
 K_MIXER = 1.55
+K_VIBRANCE = 0.2  # the stretched scale's unit for the vibrance kernel (0.18-0.22 fit equally)
 
 Curve = Sequence[tuple[float, float]]
 
@@ -512,20 +515,79 @@ def grade_curves(shadows: Zone = Zone(), midtones: Zone = Zone(), highlights: Zo
 # --- saturation, vibrance, grayscale ----------------------------------------------------------------
 
 def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: float = 0.0) -> np.ndarray:
-    """Vibrance (Lightroom's measured response, favouring muted colors), then global saturation (-100..100)."""
+    """Global saturation, then vibrance (-100..100), on scene-linear values as Lightroom does.
+
+    Both run on the exposure shoulder's stretched scale (the scene-linear values Lightroom
+    recovers from a rendered image). Saturation scales the two opponent axes and keeps luminance.
+    Vibrance rewrites each color's largest and smallest channel and keeps the middle one in
+    place: it favours muted colors, spares skin hues when boosting, and keeps some color at -100.
+    """
     _check("saturation", saturation, -100, 100)
     _check("vibrance", vibrance, -100, 100)
     enc = _as_rgb(enc)
-    if vibrance:
-        h, c = _hue(enc)
-        vib = _response().vibrance
-        gain = np.maximum(vib.gain(c, _band_weights(h), vibrance), 0.0)
-        pivot = enc.min(axis=-1) + vib.pivot(vibrance) * c  # a gray between the min and max channel
-        enc = pivot[..., None] + gain[..., None] * (enc - pivot[..., None])
+    if not saturation and not vibrance:
+        return enc
+    shoulder = _response().exposure
+    scene = shoulder.stretch(enc)
     if saturation:
-        h, c = _hue(enc)
-        enc = _recompose(enc, h, c * max(1 + saturation / 100, 0.0))
-    return enc
+        s = (saturation + 100) / 100
+        matrix = _OPPONENT_INV @ np.diag([1.0, s, s]) @ _OPPONENT
+        scene = np.maximum(scene @ matrix.T, 0.0)
+    if vibrance:
+        scene = _vibrance(scene * K_VIBRANCE, vibrance / 100) / K_VIBRANCE
+    return shoulder.rolloff(scene)
+
+
+# Luminance and two opponent axes of linear working RGB: (R - G) / 2 and (B - luminance) / 4
+_OPPONENT = np.array([[0.2880859375, 0.7119140625, 0.0],
+                      [0.5, -0.5, 0.0],
+                      [-0.072021484375, -0.177978515625, 0.25]])
+_OPPONENT_INV = np.linalg.inv(_OPPONENT)
+
+
+def _vibrance(rgb: np.ndarray, amount: float) -> np.ndarray:
+    """Vibrance ``amount`` (-1..1) on non-negative scene values.
+
+    With hexcone saturation ``s = (max - min) / max``, the largest channel and the smallest one
+    move by amounts that peak for mid-saturated colors and fade in deep shadows (below about
+    1/16) and toward white. Boosts are damped for skin hues (red to yellow). The middle
+    channel keeps its place between them, so the hexcone hue does not change.
+    """
+    x = np.maximum(rgb, 0.0)
+    hi, lo = x.max(axis=-1), x.min(axis=-1)
+    gap = hi - lo
+    colored = gap > 0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        s = np.where(colored, gap / np.where(hi > 0, hi, 1.0), 0.0)
+    shadow = np.minimum(hi * 16.0, 1.0)
+    shadow = shadow * (2.0 - shadow)
+    mid_sat = s * (1.0 - s)
+    headroom = 1.0 - np.minimum(hi, 1.0)
+    if amount > 0:
+        h = _hexcone_hue(x, hi, gap) + 1.0  # red-to-yellow lands on 1..2
+        h = np.where(h >= 6.0, h - 6.0, h)
+        skin = np.minimum(np.clip(h, 0.0, 1.0), np.clip((1.5 - h) * 4.0 + 1.0, 0.0, 1.0))
+        muted_skin = (1.0 - s * s) * skin
+        push = (muted_skin * amount + 1.0 - muted_skin) * amount
+        new_hi = hi * (headroom * mid_sat * (2.0 - mid_sat) * shadow * push * 0.25 + 1.0)
+        spread = (1.0 - s) * shadow * (1.0 - lo) * (0.8333333 - 0.4047619 * muted_skin) * push
+        new_lo = new_hi * (1.0 - s / (1.0 - spread))
+    else:
+        new_hi = hi * (headroom * shadow * amount * mid_sat * (2.0 - mid_sat) + 1.0)
+        kept = s * (amount + 1.0 - shadow * s * amount * (s * 0.5 + 0.5))
+        new_lo = new_hi * (1.0 - (amount * 0.25 + 1.0) * kept)
+    new_hi, new_lo = np.where(colored, new_hi, hi), np.where(colored, new_lo, lo)
+    place = np.where(colored[..., None], (x - lo[..., None]) / np.where(colored, gap, 1.0)[..., None], 0.0)
+    return new_lo[..., None] + place * (new_hi - new_lo)[..., None]
+
+
+def _hexcone_hue(x: np.ndarray, hi: np.ndarray, gap: np.ndarray) -> np.ndarray:
+    """HSV hue in [0, 6) (0 red, 2 green, 4 blue); 0 for neutrals."""
+    r, g, b = x[..., 0], x[..., 1], x[..., 2]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        safe = np.where(gap > 0, gap, 1.0)
+        h = np.where(hi == r, ((g - b) / safe) % 6.0, np.where(hi == g, (b - r) / safe + 2.0, (r - g) / safe + 4.0))
+    return np.where(gap > 0, h, 0.0)
 
 
 def grayscale(enc: np.ndarray, mixer: Mapping[str, float] | None = None) -> np.ndarray:
@@ -674,7 +736,9 @@ ENCODED_STAGES: dict[str, Callable[[_Sliders, np.ndarray], np.ndarray]] = {
     "saturation": _stage_saturation,
     "grayscale": _stage_grayscale,
 }
-ORDER: tuple[str, ...] = ("tone", "parametric", "curves", "look", "hsl", "grade", "saturation", "grayscale")
+# Lightroom's order: saturation, then vibrance and HSL (one stage; B&W takes HSL's place), all on
+# scene-linear values; then the tone curves, point curves, the profile's table and color grading.
+ORDER: tuple[str, ...] = ("saturation", "hsl", "grayscale", "tone", "parametric", "curves", "look", "grade")
 
 
 def render(preset: Preset, image: np.ndarray, space: cs.RGBSpace = cs.SRGB) -> np.ndarray:

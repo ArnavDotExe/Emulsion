@@ -388,6 +388,55 @@ the tone curves and the look table:
 - Running grading after Saturation instead of before changes nothing (presets 2.530/4.025 vs
   2.530/4.026), so the stage order stays.
 
+### Scene-linear saturation and vibrance, in Lightroom's stage order
+
+Journey: as a photographer, a look's Saturation and Vibrance (and its HSL and B&W mix) render as
+Lightroom renders them, also when the look adds contrast or curves on top.
+
+Lightroom runs saturation, vibrance and HSL on scene-linear values before the tone curve. For a
+rendered image, scene-linear is our exposure shoulder's stretched scale. Our pipeline ran them on
+encoded values after the curves, with saturation as a chroma formula and vibrance as a measured
+gain table. Both are replaced by reconstructions:
+
+- **Saturation** scales the two opponent axes of linear working RGB, (R − G)/2 and
+  (B − luminance)/4, by (Saturation + 100)/100, and keeps luminance (0.288 R + 0.712 G).
+- **Vibrance** works on hexcone saturation s = (max − min)/max. It moves each color's largest and
+  smallest channel by amounts that peak for mid-saturated colors and fade in deep shadows and
+  toward white, and it damps boosts for skin hues. The middle channel keeps its place between them.
+  The kernel's unit on the stretched scale, `K_VIBRANCE`, is fitted: `fit` gives 0.198, and
+  0.18–0.22 score the same.
+- **Order:** saturation, then vibrance and HSL (one Lightroom stage, vibrance first), with B&W in
+  HSL's place, all before the tone curve. Then parametric, point curves, profile table, grading.
+
+The measured vibrance table (`VibranceResponse`) and its measurement are gone. Older response
+files that still hold one load, and the table is ignored.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Saturation −50/+50 and Vibrance −100/+50 render three in-gamut colors as Lightroom's bakes do (atol 0.02) | `test_pipeline.py::test_render_saturation_and_vibrance_match_lightroom` | PASS |
+| 2 | Saturation keeps scene-linear luminance | `test_saturation_keeps_scene_linear_luminance` | PASS |
+| 3 | Vibrance keeps each color's middle channel in place on the scene-linear scale, and brightens drained blues | `test_vibrance_keeps_hue_on_the_scene_linear_scale_and_brightens_drained_blues` | PASS |
+| 4 | The stages run in Lightroom's order | `test_stages_run_in_lightrooms_order` | PASS |
+| 5 | The response has no vibrance table; older files with one still load | `test_response.py::test_response_has_no_vibrance_table_and_older_files_with_one_still_load` | PASS |
+| 6 | The Vibrance bakes fit `K_VIBRANCE` and are not measured as a table | `test_calibration.py::test_vibrance_bakes_fit_the_kernel_scale_and_are_not_measured_as_a_table` | PASS |
+| 7 | Saturation bakes average under 1.10 and Vibrance under 0.75, each under 1.7 (local) | `tests/private/test_sat_vib_vs_bakes.py` | PASS |
+
+- The earlier vibrance properties still hold unchanged: muted colors gain more, skin less, and a
+  third of a vivid color survives −100. Hue is now kept on the scene-linear scale, not the
+  encoded one (about 2° apart after the rolloff).
+- RED `2bd625e`: 10 failed, 176 passed. The failures were the new properties, two of the four
+  Lightroom fixtures, the order, the table removal, the `K_VIBRANCE` fit and the private limits.
+- GREEN: the same 186 pass.
+- Saturation bakes 2.24 → 1.05, Vibrance 2.15 → 0.67. All 147 bakes 1.32 → 1.23.
+- Private presets: median 2.53 → 1.63, mean 4.03 → 3.45. Most of it is the order:
+  - The new kernels at the old place give 2.49 / 3.98.
+  - Moving saturation and vibrance before the tone curve gives 1.80 / 3.77.
+  - Moving HSL with them gives 1.63 / 3.62.
+  - Moving B&W there too gives 1.63 / 3.45 (one B&W preset).
+  - Vibrance after HSL instead scores 1.63 / 3.60, but the decompiled stage runs vibrance first.
+- Known gap: strong saturation that pushes a color out of sRGB gamut. Saturation +100 is 1.63,
+  and a red at +50 is 0.07 off where Lightroom clips its blue to 0.
+
 ## Task 6b, step 1: spatial calibration kit (`colorlab.spatial_calibration`)
 
 Journey: as the maintainer, I build one Lightroom import of synthetic charts, each moving one

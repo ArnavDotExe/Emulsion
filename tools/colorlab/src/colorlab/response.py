@@ -11,8 +11,6 @@ For some sliders the shape comes straight from single-slider Lightroom bakes
 * Exposure: a shoulder ``y = T(2**(strength * ev) * T⁻¹(x))`` with
   ``T(s) = 1 - (1 + s/p)**-p``. Black and white stay put, highlights roll off,
   and nothing clips.
-* Vibrance: a chroma gain against chroma, scaled per hue band, applied around a
-  pivot between each color's min and max channel.
 * White balance (incremental temperature/tint): stops per channel on the exposure
   shoulder, per baked amount.
 
@@ -205,50 +203,12 @@ class WhiteBalanceResponse:
         return max(at(self.temperature_hue, temperature), at(self.tint_hue, tint))
 
 
-# --- vibrance -------------------------------------------------------------------------------------
-
-@dataclass(frozen=True, eq=False)
-class VibranceResponse:
-    """Vibrance chroma gain per baked amount, against ``chroma`` knots and the eight hue bands."""
-
-    chroma: tuple[float, ...]
-    pivots: tuple[float, float]  # where between min (0) and max (1) channel: negative, positive amounts
-    gains: Mapping[float, np.ndarray]
-    bands: Mapping[float, np.ndarray]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "chroma", tuple(float(c) for c in self.chroma))
-        object.__setattr__(self, "pivots", (float(self.pivots[0]), float(self.pivots[1])))
-        object.__setattr__(self, "gains", _as_float_map(self.gains, len(self.chroma), "vibrance gain"))
-        object.__setattr__(self, "bands", _as_float_map(self.bands, 8, "vibrance band factors"))
-        if set(self.gains) != set(self.bands):
-            raise ColorlabError("vibrance gains and band factors must list the same amounts")
-
-    def pivot(self, amount: float) -> float:
-        return self.pivots[0] if amount < 0 else self.pivots[1]
-
-    def _at(self, amount: float, chroma: np.ndarray, band_weights: np.ndarray) -> np.ndarray:
-        if amount == 0:
-            return np.ones_like(chroma)
-        base = np.interp(chroma, self.chroma, self.gains[amount])
-        return 1.0 + (base - 1.0) * (band_weights @ self.bands[amount])
-
-    def gain(self, chroma: np.ndarray, band_weights: np.ndarray, amount: float) -> np.ndarray:
-        """Chroma gain for colors of ``chroma`` with hue-band ``band_weights`` (last axis 8)."""
-        chroma = np.asarray(chroma, dtype=np.float64)
-        if amount == 0:
-            return np.ones_like(chroma)
-        a0, a1, t = _bracket(sorted([0.0, *self.gains]), amount)
-        return (1 - t) * self._at(a0, chroma, band_weights) + t * self._at(a1, chroma, band_weights)
-
-
 # --- the whole set --------------------------------------------------------------------------------
 
 @dataclass(frozen=True, eq=False)
 class Response:
     exposure: ExposureShoulder
     tone: Mapping[str, CurveFamily]
-    vibrance: VibranceResponse
     white_balance: WhiteBalanceResponse
 
     def to_dict(self) -> dict:
@@ -260,12 +220,6 @@ class Response:
             "samples": SAMPLES,
             "exposure": {"shoulder": self.exposure.shoulder, "strength": self.exposure.strength},
             "tone": {key: table(self.tone[key].curves, 6) for key in TONE_KEYS},
-            "vibrance": {
-                "chroma": list(self.vibrance.chroma),
-                "pivots": list(self.vibrance.pivots),
-                "gains": table(self.vibrance.gains, 5),
-                "bands": table(self.vibrance.bands, 5),
-            },
             "white_balance": {
                 "space": self.white_balance.space,
                 "hue_preservation": {
@@ -289,7 +243,7 @@ class Response:
             def table(d: Mapping[str, list[float]]) -> dict[float, np.ndarray]:
                 return {float(a): np.asarray(v, dtype=np.float64) for a, v in d.items()}
 
-            vib, wb = data["vibrance"], data["white_balance"]
+            wb = data["white_balance"]  # older files also hold a vibrance table, now unused
             hue = wb.get("hue_preservation")
             hue = hue if isinstance(hue, Mapping) else {}  # older files: per channel
             return cls(
@@ -299,8 +253,6 @@ class Response:
                                                    tint_hue=hue.get("tint", {})),
                 exposure=ExposureShoulder(float(data["exposure"]["shoulder"]), float(data["exposure"]["strength"])),
                 tone={k: CurveFamily(table(data["tone"][k])) for k in TONE_KEYS},
-                vibrance=VibranceResponse(tuple(vib["chroma"]), tuple(vib["pivots"]),
-                                          table(vib["gains"]), table(vib["bands"])),
             )
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise ColorlabError(f"malformed slider response data: {exc!r}") from exc
@@ -312,8 +264,6 @@ def identity() -> Response:
     return Response(
         exposure=ExposureShoulder(shoulder=5.0, strength=1.0),
         tone={k: CurveFamily(flat) for k in TONE_KEYS},
-        vibrance=VibranceResponse(chroma=(0.0, 1.0), pivots=(0.5, 0.5),
-                                  gains={100.0: np.ones(2)}, bands={100.0: np.ones(8)}),
         white_balance=WhiteBalanceResponse(temperature={100.0: np.zeros(3)}, tint={100.0: np.zeros(3)}),
     )
 
