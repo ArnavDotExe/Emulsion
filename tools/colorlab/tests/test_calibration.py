@@ -285,26 +285,23 @@ def test_measure_response_recovers_white_balance_stops_in_cone_space(tmp_path):
 
 
 
-def test_measure_response_recovers_white_balance_hue_preservation_per_amount(tmp_path):
+def test_measure_response_recovers_white_balance_stops_on_the_scene_scale(tmp_path):
     from colorlab import calibration as cal
     truth = {"IncrementalTemperature": lambda a: np.array([0.016, 0.013, 0.0]) * a,
              "IncrementalTint": lambda a: np.array([0.005, 0.0, 0.01]) * a}
     wb = [v for v in VARIANTS if any(k.startswith("Incremental") and v.settings[k] != "0" for k in v.settings)]
 
-    def curve_for(v):  # hue preservation 0.75 at |amount| 100, 0 at 25
+    def curve_for(v):
         key = next(k for k in truth if v.settings[k] != "0")
-        amount = float(v.settings[key])
-        hue = {25.0: 0.0, 50.0: 0.25, 100.0: 0.75}[abs(amount)]
-        evs = np.abs(truth[key](amount))
-        return lambda x: cal._from_working(pipeline.white_balance_stops(
-            cal._to_working(x), evs, "bradford", hue_preservation=hue))
+        evs = np.abs(truth[key](float(v.settings[key])))
+        return lambda x: cal._from_working(pipeline.white_balance_stops(cal._to_working(x), evs, "bradford"))
 
     got = measure_response(write_neutral_bakes(tmp_path / "luts", wb, curve_for)).response.white_balance
-    assert got.temperature_hue[100.0] == pytest.approx(0.75, abs=0.13)
-    assert got.tint_hue[-100.0] == pytest.approx(0.75, abs=0.13)
-    assert got.temperature_hue[25.0] == pytest.approx(0.0, abs=0.13)
+    assert not hasattr(got, "temperature_hue")
     np.testing.assert_allclose(got.temperature[100.0], [1.6, 1.3, 0.0], atol=0.08)
     np.testing.assert_allclose(got.tint[-100.0], [0.5, 0.0, 1.0], atol=0.08)
+    np.testing.assert_allclose(got.temperature[25.0], [0.4, 0.325, 0.0], atol=0.05)
+
 
 def test_vibrance_bakes_fit_the_kernel_scale_and_are_not_measured_as_a_table(tmp_path):
     assert {v.name for v in solo("Vibrance")} <= {v.name for v in variants_fitting("K_SCENE")}

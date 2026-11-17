@@ -702,29 +702,43 @@ def test_white_balance_stops_in_cone_space_keep_black_and_white_and_mix_channels
         white_balance_stops(color, evs, "lab")
 
 
-def test_white_balance_hue_preservation_keeps_max_and_min_and_places_the_middle_channel():
-    from colorlab.pipeline import white_balance_stops
-    from colorlab.response import load
-    sh = load().exposure
-    evs = np.array([0.2, 0.9, 2.5])
-    color = np.array([[0.7, 0.4, 0.3], [0.2, 0.5, 0.8], [0.35, 0.6, 0.1]])
-    per = white_balance_stops(color, evs, "working", sh)
-    np.testing.assert_allclose(white_balance_stops(color, evs, "working", sh, hue_preservation=0.0), per)
-    hue = white_balance_stops(color, evs, "working", sh, hue_preservation=1.0)
-    z = sh.stretch(color) * 2.0 ** (sh.strength * evs)
-    order = np.argsort(z, axis=1)
-    rows = np.arange(len(color))
-    lo, mid, hi = (order[:, k] for k in range(3))
-    np.testing.assert_allclose(hue[rows, hi], per[rows, hi], atol=1e-12)  # largest and smallest as per channel
-    np.testing.assert_allclose(hue[rows, lo], per[rows, lo], atol=1e-12)
-    place = (z[rows, mid] - z[rows, lo]) / (z[rows, hi] - z[rows, lo])  # middle keeps its place in stretched space
-    np.testing.assert_allclose(hue[rows, mid], hue[rows, lo] + place * (hue[rows, hi] - hue[rows, lo]), atol=1e-12)
-    half = white_balance_stops(color, evs, "working", sh, hue_preservation=0.5)
-    np.testing.assert_allclose(half, 0.5 * (per + hue), atol=1e-12)
+def test_white_balance_and_exposure_are_gains_on_the_scene_scale():
+    from colorlab.pipeline import _response, white_balance_stops
+    sh = _response().exposure
+    colors = np.random.default_rng(7).uniform(0.02, 0.95, (200, 3))
+    for space in ("working", "bradford"):  # equal stops in every channel are exposure
+        np.testing.assert_allclose(white_balance_stops(colors, np.full(3, 0.7), space), exposure(colors, 0.7),
+                                   atol=1e-7)
+    evs = np.array([0.5, 0.0, -0.4])  # working-space stops scale each channel's scene value
+    np.testing.assert_allclose(scene(white_balance_stops(colors, evs, "working")),
+                               scene(colors) * 2.0 ** (sh.strength * evs), rtol=1e-6)
     ends = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
-    np.testing.assert_allclose(white_balance_stops(ends, evs, "bradford", sh, hue_preservation=0.5), ends, atol=1e-9)
-    with pytest.raises(ParameterError, match="hue_preservation"):
-        white_balance_stops(color, evs, "working", sh, hue_preservation=1.2)
+    np.testing.assert_allclose(white_balance_stops(ends, np.array([0.2, 0.9, 2.5]), "bradford"), ends, atol=1e-9)
+
+
+def test_exposure_keeps_the_hue_of_linear_values():
+    import colorsys
+    from colorlab.pipeline import WORKING_TRANSFER
+    colors = np.random.default_rng(8).uniform(0.02, 0.9, (200, 3))
+    hue = lambda enc: np.array([colorsys.rgb_to_hsv(*c)[0] for c in cs.decode(enc, WORKING_TRANSFER)])
+    for ev in (-1.5, 1.0):
+        d = (hue(exposure(colors, ev)) - hue(colors) + 0.5) % 1.0 - 0.5
+        np.testing.assert_allclose(d, 0, atol=1e-9)
+
+
+# Lightroom bakes at saturated colors (sRGB in and out, Lightroom's output inside sRGB)
+@pytest.mark.parametrize("settings,rgb,expected,tol", [
+    ({"WhiteBalance": "Custom", "IncrementalTemperature": "-100", "IncrementalTint": "0"},
+     [0.85, 0.5, 0.1], [0.675, 0.713, 0.887], 0.03),
+    ({"WhiteBalance": "Custom", "IncrementalTemperature": "+100", "IncrementalTint": "0"},
+     [0.15, 0.6, 0.3], [0.657, 0.846, 0.205], 0.02),
+    ({"WhiteBalance": "Custom", "IncrementalTemperature": "0", "IncrementalTint": "+100"},
+     [0.85, 0.5, 0.1], [0.957, 0.463, 0.451], 0.02),
+    ({"Exposure2012": "+2"}, [0.6, 0.2, 0.7], [0.882, 0.633, 0.969], 0.025),
+])
+def test_render_white_balance_and_exposure_match_lightroom_on_saturated_colors(settings, rgb, expected, tol):
+    out = render(parse_preset(make_xmp(settings)), np.array([rgb]))[0]
+    np.testing.assert_allclose(out, expected, atol=tol)
 
 
 def test_per_channel_curves_still_act_per_channel():

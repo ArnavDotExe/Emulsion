@@ -165,35 +165,15 @@ def test_exposure_shoulder_is_a_gain_between_stretch_and_rolloff():
     assert sh.stretch(np.array([1.0]))[0] > 1e6 and sh.rolloff(np.array([1e12]))[0] == pytest.approx(1.0)
 
 
-def test_white_balance_hue_preservation_is_per_amount_zero_at_zero_and_the_larger_of_the_two():
-    assert wb().hue_preservation(-100, 50) == 0.0  # no tables: per channel
-    w = WhiteBalanceResponse(wb().temperature, wb().tint, temperature_hue={-100.0: 0.8, 100.0: 0.4},
-                             tint_hue={50.0: 0.3})
-    assert w.hue_preservation(0, 0) == 0.0
-    assert w.hue_preservation(-100, 0) == pytest.approx(0.8)
-    assert w.hue_preservation(-50, 0) == pytest.approx(0.4)  # linear from 0 at 0
-    assert w.hue_preservation(0, 25) == pytest.approx(0.15)
-    assert w.hue_preservation(100, 50) == pytest.approx(0.4)  # the larger of temperature's and tint's
-    for bad in ({100.0: -0.1}, {100.0: 1.5}):
-        with pytest.raises(ColorlabError, match="hue"):
-            WhiteBalanceResponse(wb().temperature, wb().tint, temperature_hue=bad)
-
-
-def test_white_balance_hue_tables_round_trip_and_older_files_mean_per_channel():
-    d = load().to_dict()
-    again = Response.from_dict(d).white_balance
-    assert again.temperature_hue == load().white_balance.temperature_hue
-    assert again.tint_hue == load().white_balance.tint_hue
-    del d["white_balance"]["hue_preservation"]
-    assert Response.from_dict(d).white_balance.hue_preservation(-100, 100) == 0.0
-
-
-def test_shipped_white_balance_preserves_more_hue_at_larger_amounts():
+def test_white_balance_has_no_hue_tables_and_older_files_with_them_still_load():
     w = load().white_balance
-    for table in (w.temperature_hue, w.tint_hue):
-        for sign in (-1, 1):
-            small, big = table[25.0 * sign], table[100.0 * sign]
-            assert 0.0 <= small <= big <= 1.0 and big > 0.0
+    for gone in ("temperature_hue", "tint_hue", "hue_preservation"):
+        assert not hasattr(w, gone), gone
+    d = load().to_dict()
+    assert "hue_preservation" not in d["white_balance"]
+    d["white_balance"]["hue_preservation"] = {"temperature": {"100": 0.5}, "tint": {}}
+    again = Response.from_dict(d).white_balance
+    np.testing.assert_allclose(again.evs(-100, 50), w.evs(-100, 50))
 
 # --- vibrance is a formula now, not a measured table ----------------------------------------------
 
