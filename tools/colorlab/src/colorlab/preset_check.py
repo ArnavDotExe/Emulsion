@@ -20,12 +20,13 @@ Lightroom sidecar. Lightroom applies it on import; export the images as 16-bit s
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import statistics
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 import numpy as np
 
@@ -127,18 +128,25 @@ def _smooth(img: np.ndarray) -> np.ndarray:
 
 def _scores(prefix: str, preset: Preset, chart: np.ndarray, theirs: np.ndarray, seed: int,
             look: Callable[[np.ndarray], np.ndarray] | None) -> dict[str, float]:
-    glob = look(chart) if look else render(preset, chart)
-    after = render_preset(preset, chart, seed=seed, look=look)
-    before = render_preset(preset, chart, seed=seed, local_first=True, look=look)
+    # one full-size render at a time, so a whole run fits in little memory
+    scores = {f"{prefix}global": _de(look(chart) if look else render(preset, chart), theirs)}
     smooth = _smooth(theirs)
-    return {f"{prefix}global": _de(glob, theirs), f"{prefix}after": _de(after, theirs),
-            f"{prefix}before": _de(before, theirs), f"{prefix}after_smooth": _de(_smooth(after), smooth),
-            f"{prefix}before_smooth": _de(_smooth(before), smooth)}
+    for order, local_first in (("after", False), ("before", True)):
+        ours = render_preset(preset, chart, seed=seed, local_first=local_first, look=look)
+        scores[f"{prefix}{order}"] = _de(ours, theirs)
+        scores[f"{prefix}{order}_smooth"] = _de(_smooth(ours), smooth)
+        del ours
+    return scores
 
 
 def compare_exports(export_dir: str | Path, kit_dir: str | Path, preset_dir: str | Path,
-                    lut_dir: str | Path | None = None, seed: int = 0) -> CompareReport:
-    """Score Lightroom's exports of the kit against our renders (see the module notes)."""
+                    lut_dir: str | Path | None = None, seed: int = 0, done: Iterable[str] = (),
+                    on_row: Callable[[dict], None] | None = None) -> CompareReport:
+    """Score Lightroom's exports of the kit against our renders (see the module notes).
+
+    Presets named in ``done`` are skipped; ``on_row`` gets each row as soon as it is scored.
+    """
+    done = set(done)
     kit = Path(kit_dir)
     manifest = json.loads((kit / "manifest.json").read_text(encoding="utf-8"))
     root = Path(preset_dir).resolve()
@@ -147,6 +155,8 @@ def compare_exports(export_dir: str | Path, kit_dir: str | Path, preset_dir: str
     report = CompareReport()
     for entry in manifest["entries"]:
         name = entry["kit_name"]
+        if entry["preset_name"] in done:
+            continue
         path, preset = exports.get(name.lower()), presets.get(entry["source"])
         if path is None or preset is None:
             report.missing.append(name)
@@ -165,6 +175,10 @@ def compare_exports(export_dir: str | Path, kit_dir: str | Path, preset_dir: str
             lut = read_cube(cube)
             row.update(_scores("lut_", preset, chart, theirs, seed, lambda x: apply_lut(lut, x).astype(np.float64)))
         report.rows.append(row)
+        if on_row is not None:
+            on_row(row)
+        del chart, theirs
+        gc.collect()
     return report
 
 
@@ -187,6 +201,30 @@ def _print_report(report: CompareReport) -> None:
         print(f"unchanged (Lightroom didn't apply the preset) {len(report.unchanged)}: " + ", ".join(report.unchanged))
 
 
+def _compare_cli(args: argparse.Namespace) -> CompareReport:
+    """Run ``compare``, saving the JSON after every preset and resuming from it unless ``--fresh``."""
+    rows: list[dict] = []
+    if args.json and args.json.is_file() and not args.fresh:
+        rows = json.loads(args.json.read_text(encoding="utf-8"))["rows"]
+        print(f"resuming: {len(rows)} presets already scored in {args.json}", flush=True)
+
+    def save(report: CompareReport) -> None:
+        if args.json:
+            args.json.parent.mkdir(parents=True, exist_ok=True)
+            args.json.write_text(json.dumps(asdict(report), indent=2), encoding="utf-8")
+
+    def on_row(row: dict) -> None:
+        rows.append(row)
+        print(f"{row['name']}: " + ", ".join(f"{c} {row[c]:.3f}" for c in _COLUMNS if c in row), flush=True)
+        save(CompareReport(rows=rows))
+
+    report = compare_exports(args.exports, args.kit, args.presets, args.luts, args.seed,
+                             done=[r["name"] for r in rows], on_row=on_row)
+    report.rows = rows
+    save(report)
+    return report
+
+
 def _size(text: str) -> tuple[int, int]:
     parts = text.lower().split("x")
     if len(parts) != 2 or not all(p.isdigit() for p in parts):
@@ -207,18 +245,16 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("presets", type=Path)
     c.add_argument("--luts", type=Path, help="Lightroom's baked .cube files, named after the presets")
     c.add_argument("--seed", type=int, default=0)
-    c.add_argument("--json", type=Path, help="also write the report here")
+    c.add_argument("--json", type=Path, help="write the report here after every preset, and resume from it")
+    c.add_argument("--fresh", action="store_true", help="ignore an existing --json report and score everything")
     args = parser.parse_args(argv)
     try:
         if args.command == "kit":
             entries = write_preset_kit(args.presets, args.out, _size(args.size))
             print(f"wrote {len(entries)} presets and images to {args.out}; see README.txt")
             return 0
-        report = compare_exports(args.exports, args.kit, args.presets, args.luts, args.seed)
+        report = _compare_cli(args)
         _print_report(report)
-        if args.json:
-            args.json.parent.mkdir(parents=True, exist_ok=True)
-            args.json.write_text(json.dumps(asdict(report), indent=2), encoding="utf-8")
     except (ValueError, OSError, ColorlabError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
