@@ -577,10 +577,12 @@ def test_render_saturation_and_vibrance_match_lightroom(settings, expected):
 
 
 def test_stages_run_in_lightrooms_order():
-    # Lightroom: saturation, then vibrance and HSL (one stage, vibrance first; B&W replaces HSL),
-    # all on scene-linear values before the tone curve; then curves, profile table, color grading.
+    # Lightroom: Whites and Blacks with exposure, saturation, then vibrance and HSL (one stage,
+    # vibrance first; B&W replaces HSL), all on scene-linear values before the tone curve; then
+    # curves, profile table, color grading.
     from colorlab.pipeline import ORDER
-    assert ORDER == ("saturation", "hsl", "grayscale", "tone", "parametric", "curves", "look", "grade")
+    assert ORDER == ("whites_blacks", "saturation", "hsl", "grayscale", "tone", "parametric", "curves", "look",
+                     "grade")
 
 
 def test_saturation_and_vibrance_leave_neutrals():
@@ -798,12 +800,13 @@ def test_whites_and_blacks_keep_grays_on_lightrooms_measured_curves():
 
 
 def test_render_applies_whites_and_blacks_in_the_exposure_stage_before_saturation():
-    from colorlab.pipeline import ORDER
+    from colorlab.pipeline import ORDER, WORKING
     assert ORDER[0] == "whites_blacks" and ORDER.index("whites_blacks") < ORDER.index("saturation")
     preset = parse_preset(make_xmp({"Blacks2012": "+60", "Saturation": "-50", "ProcessVersion": "11.0"}))
     alone = parse_preset(make_xmp({"Saturation": "-50", "ProcessVersion": "11.0"}))
-    np.testing.assert_allclose(render(preset, SATURATED), render(alone, whites_blacks(SATURATED, blacks=60)),
-                               atol=2e-6)
+    # in the working space, so render's stages see the same values as whites_blacks
+    np.testing.assert_allclose(render(preset, SATURATED, WORKING),
+                               render(alone, whites_blacks(SATURATED, blacks=60), WORKING), atol=2e-6)
 
 
 # Lightroom bakes at saturated colors (sRGB in and out, process version 11)

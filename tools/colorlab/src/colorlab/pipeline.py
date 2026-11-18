@@ -131,28 +131,69 @@ def _is_identity(curve: Curve) -> bool:
     return tuple(map(tuple, curve)) == IDENTITY_CURVE
 
 
-def rgb_tone(rgb: np.ndarray, curve: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
+def rgb_tone(rgb: np.ndarray, curve: Callable[[np.ndarray], np.ndarray], pull: bool = False) -> np.ndarray:
     """Apply a monotonic tone ``curve`` to colors without shifting their hue.
 
     The curve maps each pixel's largest and smallest channel; the middle channel keeps its
     relative place between them (the "RGB tone" method of Adobe's public DNG SDK). Neutrals
     get exactly ``curve``. Per-channel curves would instead push bright saturated colors
     toward the primaries and secondaries (red toward orange, blue toward cyan).
+
+    With ``pull`` (Lightroom's curves from process version 15.4), the curve reads the max and min
+    pulled toward the middle channel, by ``t**2 / 2`` and ``(1 - t)**2 / 2`` of the way (``t`` the
+    middle's place), and the outputs are the max and min whose pulled values the curve gave, kept
+    in [0, 1]. A color whose middle sits near its max is then toned more like that pair.
     """
     rgb = _as_rgb(rgb)
     hi, lo = rgb.max(axis=-1), rgb.min(axis=-1)
-    f_hi, f_lo = curve(hi), curve(lo)
     span = hi - lo
     place = (rgb - lo[..., None]) / np.where(span > 0, span, 1.0)[..., None]
+    if not pull:
+        f_hi, f_lo = curve(hi), curve(lo)
+    else:
+        t = np.median(place, axis=-1)
+        mid = lo + t * span
+        f_hi = curve(hi + (mid - hi) * t * t / 2)
+        f_lo = curve(lo + (mid - lo) * (1 - t) ** 2 / 2)
+        # invert the pull: the max and min whose pulled values are f_hi and f_lo
+        t2, inv = t * t, 1.0 / (t * t - t + 2.0)
+        f_hi, f_lo = (np.clip(inv * ((2 + 2 * t2 - t - t * t2) * f_hi + (t - 1) * t2 * f_lo), 0.0, 1.0),
+                      np.clip(inv * (-t * (t - 1) ** 2 * f_hi + (t * t2 - t2 + 2) * f_lo), 0.0, 1.0))
     return f_lo[..., None] + place * (f_hi - f_lo)[..., None]
 
 
+def _version(text: str) -> tuple[int, int]:
+    """A process version string such as "15.4" as (major, minor); (0, 0) when missing or unreadable."""
+    parts = (text or "").split(".")
+    try:
+        return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        return 0, 0
+
+
+def curve_tone(enc: np.ndarray, curve: Callable[[np.ndarray], np.ndarray], process_version: str = "") -> np.ndarray:
+    """Lightroom's tone curve (Contrast, the parametric and the point curve) on encoded colors.
+
+    Before process version 15.4 the encoded ``curve`` maps each color's *linear* max and min
+    (:func:`rgb_tone`), so the hue of its linear values is kept, as exposure keeps it. From 15.4
+    Lightroom moves these curves to a luminance-mode stage that isn't reconstructed; the pulled
+    method on encoded values (``rgb_tone(pull=True)``) is the measured stand-in.
+    """
+    enc = _as_rgb(enc)
+    if _version(process_version) >= (15, 4):
+        return rgb_tone(enc, lambda v: curve(np.clip(v, 0.0, 1.0)), pull=True)
+    lin = rgb_tone(cs.decode(enc, WORKING_TRANSFER),
+                   lambda x: cs.decode(curve(np.clip(cs.encode(np.maximum(x, 0.0), WORKING_TRANSFER), 0.0, 1.0)),
+                                       WORKING_TRANSFER))
+    return cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
+
+
 def apply_curves(rgb: np.ndarray, master: Curve = IDENTITY_CURVE, red: Curve = IDENTITY_CURVE,
-                 green: Curve = IDENTITY_CURVE, blue: Curve = IDENTITY_CURVE) -> np.ndarray:
-    """Master curve (hue-preserving, see ``rgb_tone``), then each channel's own curve (encoded values)."""
+                 green: Curve = IDENTITY_CURVE, blue: Curve = IDENTITY_CURVE, process_version: str = "") -> np.ndarray:
+    """Master curve (hue-preserving, see :func:`curve_tone`), then each channel's own curve (encoded values)."""
     out = _as_rgb(rgb).copy()
     if not _is_identity(master):
-        out = rgb_tone(out, spline(master))
+        out = curve_tone(out, spline(master), process_version)
     for i, curve in enumerate((red, green, blue)):
         if not _is_identity(curve):
             out[..., i] = spline(curve)(out[..., i])
@@ -209,9 +250,11 @@ def exposure(enc: np.ndarray, ev: float) -> np.ndarray:
     return _from_scene(_to_scene(enc, shoulder) * 2.0 ** (shoulder.strength * ev), shoulder)
 
 
-def tone(enc: np.ndarray, contrast: float = 0.0, whites: float = 0.0, blacks: float = 0.0) -> np.ndarray:
+def tone(enc: np.ndarray, contrast: float = 0.0, whites: float = 0.0, blacks: float = 0.0,
+         process_version: str = "") -> np.ndarray:
     """Contrast, Whites and Blacks (-100..100): Lightroom's measured curves, in that order, applied
-    hue-preservingly (``rgb_tone``)."""
+    hue-preservingly (:func:`curve_tone`). Grays get exactly the measured curves. :func:`render`
+    applies Whites and Blacks in :func:`whites_blacks` instead, the way Lightroom does for colors."""
     for name, v in (("contrast", contrast), ("whites", whites), ("blacks", blacks)):
         _check(name, v, -100, 100)
     enc = _as_rgb(enc)
@@ -225,12 +268,57 @@ def tone(enc: np.ndarray, contrast: float = 0.0, whites: float = 0.0, blacks: fl
             v = tones[key].apply(v, amount)
         return v
 
-    return rgb_tone(enc, curve)
+    return curve_tone(enc, curve, process_version)
+
+
+_BRIGHTNESS_KEY = np.array([0.25, 0.5, 0.25])  # Whites - and Blacks + read (R + 2G + B) / 4
+
+
+def whites_blacks(enc: np.ndarray, whites: float = 0.0, blacks: float = 0.0) -> np.ndarray:
+    """Whites and Blacks (-100..100) as Lightroom applies them to colors, with exposure, before
+    saturation and HSL. Grays get the measured curves (:func:`tone`); colors, by direction:
+
+    - Whites +: the curve on each color's linear max and min (the exposure clip and rolloff).
+    - Whites - and Blacks +: one gain for all channels on the scene scale (:func:`_to_scene`),
+      the curve's ratio at the brightness key (R + 2G + B) / 4, so scene chroma ratios are kept.
+    - Blacks -: the curve on each channel on its own, on the scene scale, so dark channels of a
+      saturated color reach black before its bright ones.
+
+    Whites apply first, then Blacks.
+    """
+    _check("whites", whites, -100, 100)
+    _check("blacks", blacks, -100, 100)
+    enc = _as_rgb(enc)
+    tones = _response().tone
+    if whites > 0:
+        enc = curve_tone(enc, lambda v: tones["Whites2012"].apply(v, whites))
+    elif whites < 0:
+        enc = _scene_ratio(enc, _scene_curve(tones["Whites2012"], whites))
+    if blacks < 0:
+        enc = _from_scene(_scene_curve(tones["Blacks2012"], blacks)(_to_scene(enc)))
+    elif blacks > 0:
+        enc = _scene_ratio(enc, _scene_curve(tones["Blacks2012"], blacks))
+    return enc
+
+
+def _scene_curve(curve: response.CurveFamily, amount: float) -> Callable[[np.ndarray], np.ndarray]:
+    """A measured curve on encoded grays as a function on the scene scale."""
+    sh = _response().exposure
+    return lambda s: sh.stretch(np.clip(curve.apply(np.clip(sh.rolloff(np.maximum(s, 0.0)), 0.0, 1.0), amount),
+                                        0.0, 1.0))
+
+
+def _scene_ratio(enc: np.ndarray, curve: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
+    scene = _to_scene(enc)
+    key = scene @ _BRIGHTNESS_KEY
+    return _from_scene(scene * (curve(key) / np.maximum(key, 1e-12))[..., None])
 
 
 def parametric_curve(enc: np.ndarray, shadows: float = 0.0, darks: float = 0.0, lights: float = 0.0,
-                     highlights: float = 0.0, splits: Sequence[float] = (25, 50, 75)) -> np.ndarray:
-    """Lightroom's four-region parametric curve (-100..100); ``splits`` are the region dividers (0-100)."""
+                     highlights: float = 0.0, splits: Sequence[float] = (25, 50, 75),
+                     process_version: str = "") -> np.ndarray:
+    """Lightroom's four-region parametric curve (-100..100); ``splits`` are the region dividers (0-100).
+    Applied hue-preservingly (:func:`curve_tone`)."""
     amounts = (shadows, darks, lights, highlights)
     for name, v in zip(("shadows", "darks", "lights", "highlights"), amounts):
         _check(name, v, -100, 100)
@@ -252,7 +340,7 @@ def parametric_curve(enc: np.ndarray, shadows: float = 0.0, darks: float = 0.0, 
             v = tones[key].apply(v, amount)
         return np.interp(v, default, custom)
 
-    return rgb_tone(enc, curve)
+    return curve_tone(enc, curve, process_version)
 
 
 # --- hue bands -----------------------------------------------------------------------------------
@@ -796,8 +884,12 @@ def _look_table(s: _Sliders, enc: np.ndarray) -> np.ndarray:
     return cs.encode(out, WORKING_TRANSFER)
 
 
+def _stage_whites_blacks(s: _Sliders, enc: np.ndarray) -> np.ndarray:
+    return whites_blacks(enc, s.number("Whites2012"), s.number("Blacks2012"))
+
+
 def _stage_tone(s: _Sliders, enc: np.ndarray) -> np.ndarray:
-    return tone(enc, s.number("Contrast2012"), s.number("Whites2012"), s.number("Blacks2012"))
+    return tone(enc, s.number("Contrast2012"), process_version=s.preset.process_version)
 
 
 def _stage_parametric(s: _Sliders, enc: np.ndarray) -> np.ndarray:
@@ -806,12 +898,13 @@ def _stage_parametric(s: _Sliders, enc: np.ndarray) -> np.ndarray:
         s.number("ParametricHighlights"),
         splits=(s.number("ParametricShadowSplit", 25), s.number("ParametricMidtoneSplit", 50),
                 s.number("ParametricHighlightSplit", 75)),
+        process_version=s.preset.process_version,
     )
 
 
 def _stage_curves(s: _Sliders, enc: np.ndarray) -> np.ndarray:
     for master in s.curves("ToneCurvePV2012"):
-        enc = apply_curves(enc, master=master)
+        enc = apply_curves(enc, master=master, process_version=s.preset.process_version)
     for i, key in enumerate(_CURVES[1:]):
         for c in s.curves(key):
             enc = apply_curves(enc, **{("red", "green", "blue")[i]: c})
@@ -826,11 +919,7 @@ def _stage_hsl(s: _Sliders, enc: np.ndarray) -> np.ndarray:
 
 def _process_version(preset: Preset) -> tuple[int, int]:
     """``crs:ProcessVersion`` as (major, minor); (0, 0) when missing or unreadable."""
-    parts = (preset.process_version or "").split(".")
-    try:
-        return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
-    except ValueError:
-        return 0, 0
+    return _version(preset.process_version)
 
 
 _LEGACY_SPLIT_TONING = ("SplitToningShadowHue", "SplitToningShadowSaturation", "SplitToningHighlightHue",
@@ -858,6 +947,7 @@ def _stage_grayscale(s: _Sliders, enc: np.ndarray) -> np.ndarray:
 
 
 ENCODED_STAGES: dict[str, Callable[[_Sliders, np.ndarray], np.ndarray]] = {
+    "whites_blacks": _stage_whites_blacks,
     "tone": _stage_tone,
     "parametric": _stage_parametric,
     "curves": _stage_curves,
@@ -867,9 +957,11 @@ ENCODED_STAGES: dict[str, Callable[[_Sliders, np.ndarray], np.ndarray]] = {
     "saturation": _stage_saturation,
     "grayscale": _stage_grayscale,
 }
-# Lightroom's order: saturation, then vibrance and HSL (one stage; B&W takes HSL's place), all on
-# scene-linear values; then the tone curves, point curves, the profile's table and color grading.
-ORDER: tuple[str, ...] = ("saturation", "hsl", "grayscale", "tone", "parametric", "curves", "look", "grade")
+# Lightroom's order: Whites and Blacks with exposure, saturation, then vibrance and HSL (one stage;
+# B&W takes HSL's place), all on scene-linear values; then the tone curve (Contrast, parametric,
+# point curve), the profile's table and color grading.
+ORDER: tuple[str, ...] = ("whites_blacks", "saturation", "hsl", "grayscale", "tone", "parametric", "curves",
+                          "look", "grade")
 
 
 def render(preset: Preset, image: np.ndarray, space: cs.RGBSpace = cs.SRGB) -> np.ndarray:
