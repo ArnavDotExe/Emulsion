@@ -1221,6 +1221,125 @@ in the camera matches the preset. All the spatial passes a preset names should r
   - Not wired into `render`. The passes run on the encoded image after the look; Lightroom runs
     most of them before the profile.
 
+## Whole-preset check against Lightroom (`colorlab.preset_check`, `finish.render_preset`)
+
+Journey: as a photographer using an Emulsion look, I want it to match its preset as Lightroom
+renders it in full, global color and spatial effects together, and to see where and why they
+differ.
+
+- 36 of the 44 private `.xmp` presets use spatial settings:
+
+  | Setting | Presets |
+  |---|---|
+  | Highlights / Shadows | 27 / 25 |
+  | Grain | 22 |
+  | Clarity | 17 |
+  | Sharpening | 16 |
+  | Color NR / Luminance NR | 13 / 11 |
+  | Texture | 10 |
+  | Dehaze | 9 |
+  | Post-crop vignette | 9 |
+
+  None uses crop, lens profiles or lens vignetting. The Hald bakes zero all of these, so until
+  now nothing measured them together.
+- `finish.render_preset(preset, image, seed, local_first, look)`:
+  - It runs the global look (`pipeline.render`, or `look`, for example Lightroom's own baked LUT),
+    then `local_passes` (NR, Highlights/Shadows, Dehaze, Texture, Clarity, sharpening), then
+    `finishing_passes` (vignette, grain).
+  - With `local_first` the local passes run before the look. That is closer to Lightroom's
+    pipeline, but the passes were fitted with no look.
+  - `apply_settings` is `finishing_passes(local_passes(...))`.
+- `bake.make_bake_xmp(..., group, keep_spatial)`:
+  - `NEUTRALIZED_SETTINGS` is now `SPATIAL_SETTINGS` plus `GEOMETRY_SETTINGS`.
+  - A full copy keeps the spatial ones and still neutralizes geometry, so the chart stays in place.
+- `python -m colorlab.preset_check kit <presets> <kit>` writes a full copy of every normal `.xmp`
+  preset (group "FilmSim Full Check", prefix "FilmSim Full - "). With it goes the 1536 × 1024 scene
+  chart carrying that copy as a Lightroom sidecar, a manifest and a README.
+- `compare <exports> <kit> <presets> [--luts out/...]` scores each export (mean ΔE2000), as
+  `global`, `after`, `before` and their `*_smooth` versions.
+  - The `*_smooth` scores blur both images (σ 2 px) first, since the grain pattern isn't
+    reproduced.
+  - With Lightroom's baked LUTs it scores the same as `lut_*`, which isolates the spatial passes
+    from the global look.
+  - It also lists missing exports and exports Lightroom left unchanged.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | A full copy keeps every spatial setting and still neutralizes geometry, in the named group | `test_full_copy_keeps_spatial_settings_and_still_neutralizes_geometry` | PASS |
+| 2 | `render_preset` is the look alone for a plain preset; both orders compose as specified; `look` replaces the global render | `test_render_preset_runs_the_look_then_the_spatial_passes_in_either_order` | PASS |
+| 3 | The kit holds full copies, charts with embedded sidecars, a manifest and a README; it skips Look presets and won't overwrite | `test_kit_holds_full_copies_and_charts_with_embedded_sidecars` | PASS |
+| 4 | `compare` scores each order, finds missing and unchanged exports | `test_compare_scores_each_order_and_finds_missing_and_unchanged_exports` | PASS |
+| 5 | With LUTs it scores the passes on Lightroom's own look | `test_compare_runs_the_spatial_passes_on_lightrooms_own_look_when_given_its_luts` | PASS |
+| 6 | The CLI writes the kit and a JSON report and rejects bad input | `test_cli_writes_the_kit_and_a_json_report` | PASS |
+
+- RED `d5e1a3b`: `tests/test_preset_check.py` fails at collection (`cannot import name
+  'render_preset'`). The new bake test fails with `cannot import name 'GEOMETRY_SETTINGS'`, and
+  the `render_preset` test fails on its import.
+- GREEN `7f69705`: public suite 504 pass at 97.84% coverage; private suite 29 pass.
+- The kit for the 44 private presets is `out/preset-kit` (397 MB). The results wait for its
+  Lightroom export.
+
+## Dehaze's dark channel half (`local_contrast.dehaze`)
+
+Journey: as a photographer using a look with strong Dehaze, I want colors and large flat areas to
+come out as Lightroom renders them. Dehaze +100 was the weakest spatial fit (2.22).
+
+### What the +100 residual was (scene chart, by region)
+
+- The flats' centres were too bright. Lightroom takes the 0.5 patch to 0.169 at its centre, while
+  ours gave 0.235. Its change varies over about 250 px inside a flat patch, which a base of width/32
+  (48 px) can't follow.
+- Saturated colors: Lightroom keeps the main channel and crushes the others. Blue
+  (0.15, 0.25, 0.85) becomes (0.00, 0.005, 0.828) and yellow (0.9, 0.8, 0.1) becomes
+  (0.871, 0.763, 0.00); ours gave (0.04, 0.13, 0.56) and (0.81, 0.60, 0.00). The per-channel
+  form `(I − A)/t + A` with one `t` per pixel reproduces them: blue needs t ≈ 0.87, yellow
+  0.78, gray 0.5 0.60.
+
+### The model
+
+- Negative amounts are unchanged.
+- Positive amounts mix the tone-table result with a dark channel result (He, Sun and Tang,
+  2009), written from the paper's formula on encoded values:
+  - haze map `D` = guided filter (guide: luma, radius width/16, eps 0.01) of the minimum over
+    width/128 px of `0.65 · min(R, G, B) + 0.35 · luma`;
+  - `t = max(1 − ω D / A, 0.05)` with A = 1.05, and `J = (I − A)/t + A`;
+  - ω = 0.2 / 0.4 / 0.775 and the dark channel's share β = 0.2 / 0.5 / 0.8 at 25 / 50 / 100,
+    linear in between.
+
+### Tried and rejected
+
+| Variant | +25 | +50 | +100 |
+|---|---|---|---|
+| Tone table and color gain alone (previous) | 0.33 | 0.82 | 2.22 |
+| Per-pixel dark channel (no neighbourhood), best of encoded and linear | 0.66 | 1.39 | 4.36 |
+| Dark channel with a smooth map alone | 0.43 | 0.84 | 1.70 |
+| Blend of both (kept) | 0.31 | 0.71 | 1.60 |
+
+- The per-pixel dark channel leaves saturated colors unchanged, since their darkest channel is
+  near 0, while Lightroom darkens them.
+- On the darkest channel alone the map scored 2.04 at +100. Mixing in luma (0.65 / 0.35) gave 1.70.
+- Adding haze for negative amounts, `J = I t + A (1 − t)`, scored 2.5 / 4.8 / 7.7 at
+  −25 / −50 / −100 against the tables' 0.39 / 0.62 / 0.83, so the tables stay.
+- Fixed radii at 768 px: 1.24 against 0.82 with radii relative to the frame.
+
+### Results (mean ΔE2000; ours / Lightroom's change)
+
+- Dehaze +25 0.31 / 2.57, +50 0.71 / 5.50, +100 1.60 / 13.34; negative amounts unchanged
+  (−100 0.83).
+- Dehaze +50 at other sizes: 0.72 / 5.43 at 768 px, 0.73 / 5.54 at 3072 px.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Dehaze +100 keeps blue's main channel (> 0.7) and crushes red (< 0.05); grays stay gray | `test_dehaze_keeps_a_saturated_colors_main_channel_like_lightroom` | PASS |
+| 2 | The haze map's radii are width/128 and width/16 | `test_dehaze_neighbourhood_follows_the_frame` | PASS |
+| 3 | Against Lightroom, with limits tightened to +25 0.35, +50 0.76, +100 1.7 and frame sizes 0.8 (private) | `tests/private/test_finish_vs_lightroom.py::test_dehaze_matches_lightroom_on_the_scene_chart` | PASS |
+
+- RED `cb095b2`: blue's main channel came out 0.468 (Lightroom 0.83), and `dehaze_radii` didn't
+  exist.
+- GREEN: `cbc4577`: public suite 506 pass at 98% coverage; private `test_finish_vs_lightroom` 6
+  pass
+- Known gap: +100 is still 1.60, mostly the bright saturated patches and the ramp.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

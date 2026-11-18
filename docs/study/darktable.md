@@ -77,9 +77,12 @@ What this means for Emulsion:
    Highlights/Shadows tone table it also lost (Shadows +100 1.12–1.31 against 0.66), so it stays
    only as a tested filter.
 3. **Dark channel + guided filter** (`iop/hazeremoval.c`, `common/guided_filter.c`) for Dehaze.
-   **Not tried yet:** `local_contrast.dehaze` reproduces the chart as a monotone local tone table
-   with a linear-light color gain (0.33–0.83, but +100 2.22). The dark channel is the next thing to try for
-   the +100 gap.
+   **Tried:**
+   - Alone, per pixel, it loses: +100 4.36 against the tone table's 2.22, because it leaves
+     saturated colors alone.
+   - With a smooth haze map (width/128 min filter, width/16 guided filter, darkest channel mixed
+     with luma) and mixed into the tone-table result for positive amounts, it brings +25/+50/+100
+     to 0.31/0.71/1.60. Written from the paper's formula; no darktable code is used.
 4. **Guided-filter mask** (`toneequal`) for Highlights/Shadows. **Tried:** a guided-filter base
    (radius 48–192) fitted worse than a Gaussian one (Shadows +100 0.61–0.66 against 0.54), so
    `highlights_shadows` uses a table over the pixel and a frame-relative Gaussian base.
