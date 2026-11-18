@@ -91,6 +91,7 @@ def _build() -> tuple[Variant, ...]:
         # Lightroom ignores a lone channel curve; list all four, the unused ones as identity.
         curves = {k: ((0, 0), (255, 255)) for k in _CURVE_KEYS}
         out.append(Variant(f"Cal Curve {name}", custom, {**curves, key: pts}))
+    out += _process_version_15_4()
     for band in BANDS:
         b = band.capitalize()
         out += _sweep(f"HSL Hue {b}", f"HueAdjustment{b}", (-100, 100), ("K_SCENE",))
@@ -116,6 +117,29 @@ def _build() -> tuple[Variant, ...]:
         b = band.capitalize()
         out.append(Variant(f"Cal BW Mix {b} +100", {**mixer, f"GrayMixer{b}": "+100"}))
     return tuple(out)
+
+
+def _process_version_15_4() -> list[Variant]:
+    """Checks of the PV 15.4 tone stages (the other variants are PV 11): Contrast, parametric and
+    point curve in 15.4's combined pulled curve, Whites/Blacks, a channel curve, and the point
+    curve's luminance mode (Refine Saturation 0 and 50, alone and after Contrast). They set two or
+    more keys, so the measured slider shapes stay those of PV 11."""
+    pv = {"ProcessVersion": "15.4"}
+    custom = {**pv, "ToneCurveName2012": "Custom"}
+    identity = {k: ((0, 0), (255, 255)) for k in _CURVE_KEYS}
+    master_s = {**identity, "ToneCurvePV2012": ((0, 0), (64, 44), (192, 212), (255, 255))}
+    out = [Variant(f"Cal PV15 {label} {value}", {**pv, key: value})
+           for label, key, value in (("Contrast", "Contrast2012", "+100"), ("Parametric Darks", "ParametricDarks", "-100"),
+                                     ("Whites", "Whites2012", "+100"), ("Whites", "Whites2012", "-100"),
+                                     ("Blacks", "Blacks2012", "+100"), ("Blacks", "Blacks2012", "-100"))]
+    out.append(Variant("Cal PV15 Curve Master S", custom, master_s))
+    out.append(Variant("Cal PV15 Curve Red", custom, {**identity, "ToneCurvePV2012Red": ((0, 0), (128, 168), (255, 255))}))
+    for refine in ("0", "50"):
+        out.append(Variant(f"Cal PV15 Curve Master S Refine {refine}", {**custom, "CurveRefineSaturation": refine},
+                           master_s))
+    out.append(Variant("Cal PV15 Contrast +50 Curve Master S Refine 0",
+                       {**custom, "Contrast2012": "+50", "CurveRefineSaturation": "0"}, master_s))
+    return out
 
 
 VARIANTS: tuple[Variant, ...] = _build()

@@ -176,8 +176,11 @@ def curve_tone(enc: np.ndarray, curve: Callable[[np.ndarray], np.ndarray], proce
 
     Before process version 15.4 the encoded ``curve`` maps each color's *linear* max and min
     (:func:`rgb_tone`), so the hue of its linear values is kept, as exposure keeps it. From 15.4
-    Lightroom moves these curves to a luminance-mode stage that isn't reconstructed; the pulled
-    method on encoded values (``rgb_tone(pull=True)``) is the measured stand-in.
+    Lightroom moves these curves to a second stage that combines them into one curve on
+    sRGB-encoded values (our working encoding) and applies it with the pull
+    (``rgb_tone(pull=True)``). Pulled tones compose exactly, so applying the three curves in turn
+    gives the same result. That stage's luminance mode is :func:`luma_curve`, used only for the point
+    curve when Refine Saturation is below 100 (:func:`apply_curves`).
     """
     enc = _as_rgb(enc)
     if _version(process_version) >= (15, 4):
@@ -188,12 +191,51 @@ def curve_tone(enc: np.ndarray, curve: Callable[[np.ndarray], np.ndarray], proce
     return cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
 
 
+_CURVE_LUMA = np.array([0.30, 0.59, 0.11])  # the luminance mode's weights, on encoded values
+
+
+def luma_curve(enc: np.ndarray, curve: Callable[[np.ndarray], np.ndarray], blend: float = 1.0) -> np.ndarray:
+    """A tone ``curve`` in Lightroom's luminance mode (process version 15.4's Refine Saturation),
+    on encoded values.
+
+    Each channel goes through the curve, and the curved values' luma ``Y`` (0.30 R + 0.59 G +
+    0.11 B) sets one shift for all channels: ``Y`` minus the input's luma. So the curve changes
+    brightness while the channels keep their differences, and the curve's contrast doesn't add
+    saturation. A result outside [0, 1] is scaled toward ``Y`` until it fits, first below 0, then
+    above 1. ``blend`` (0..1) mixes this with the pulled hue-preserving tone
+    (``rgb_tone(pull=True)``), which it is at 0. Grays always get exactly ``curve``.
+    """
+    _check("blend", blend, 0, 1)
+    enc = _as_rgb(enc)
+    def bounded(v: np.ndarray) -> np.ndarray:
+        return curve(np.clip(v, 0.0, 1.0))
+    hue = rgb_tone(enc, bounded, pull=True)
+    if blend == 0:
+        return hue
+    y = (bounded(enc) @ _CURVE_LUMA)[..., None]
+    out = enc + (y - (enc @ _CURVE_LUMA)[..., None])
+    lo = out.min(axis=-1, keepdims=True)
+    out = y + (out - y) * np.where(lo < 0, y / np.where(lo < 0, y - lo, 1.0), 1.0)
+    hi = out.max(axis=-1, keepdims=True)
+    out = y + (out - y) * np.where(hi > 1, (1 - y) / np.where(hi > 1, hi - y, 1.0), 1.0)
+    return hue + (out - hue) * blend
+
+
 def apply_curves(rgb: np.ndarray, master: Curve = IDENTITY_CURVE, red: Curve = IDENTITY_CURVE,
-                 green: Curve = IDENTITY_CURVE, blue: Curve = IDENTITY_CURVE, process_version: str = "") -> np.ndarray:
-    """Master curve (hue-preserving, see :func:`curve_tone`), then each channel's own curve (encoded values)."""
+                 green: Curve = IDENTITY_CURVE, blue: Curve = IDENTITY_CURVE, process_version: str = "",
+                 refine_saturation: float = 100.0) -> np.ndarray:
+    """Master curve (hue-preserving, see :func:`curve_tone`), then each channel's own curve (encoded values).
+
+    From process version 15.4, Refine Saturation (0..100) below 100 moves the master curve to the
+    luminance mode (:func:`luma_curve`) with blend ``(100 - refine_saturation) / 100``.
+    """
+    _check("refine saturation", refine_saturation, 0, 100)
     out = _as_rgb(rgb).copy()
     if not _is_identity(master):
-        out = curve_tone(out, spline(master), process_version)
+        if _version(process_version) >= (15, 4) and refine_saturation < 100:
+            out = luma_curve(out, spline(master), (100 - refine_saturation) / 100)
+        else:
+            out = curve_tone(out, spline(master), process_version)
     for i, curve in enumerate((red, green, blue)):
         if not _is_identity(curve):
             out[..., i] = spline(curve)(out[..., i])
@@ -903,8 +945,9 @@ def _stage_parametric(s: _Sliders, enc: np.ndarray) -> np.ndarray:
 
 
 def _stage_curves(s: _Sliders, enc: np.ndarray) -> np.ndarray:
+    refine = s.number("CurveRefineSaturation", 100.0)
     for master in s.curves("ToneCurvePV2012"):
-        enc = apply_curves(enc, master=master, process_version=s.preset.process_version)
+        enc = apply_curves(enc, master=master, process_version=s.preset.process_version, refine_saturation=refine)
     for i, key in enumerate(_CURVES[1:]):
         for c in s.curves(key):
             enc = apply_curves(enc, **{("red", "green", "blue")[i]: c})
