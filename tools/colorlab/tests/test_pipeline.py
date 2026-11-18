@@ -774,6 +774,87 @@ def test_pulled_rgb_tone_with_an_identity_curve_changes_nothing():
     np.testing.assert_allclose(rgb_tone(GRAYS, lambda v: v * v, pull=True), GRAYS ** 2, atol=1e-12)
 
 
+def test_pulled_tones_compose_so_one_combined_curve_equals_the_curves_in_turn():
+    # Lightroom 15.4 applies Contrast, the parametric and the point curve as one pulled curve; the
+    # pull is linear in (max, min) for a fixed middle place, so applying them in turn is the same
+    from colorlab.pipeline import rgb_tone
+    def f(v):
+        return np.sqrt(v)
+    def g(v):
+        return v * v * (3 - 2 * v)
+    np.testing.assert_allclose(rgb_tone(rgb_tone(SATURATED, f, pull=True), g, pull=True),
+                               rgb_tone(SATURATED, lambda v: g(f(v)), pull=True), atol=1e-12)
+
+
+def _luma_reference(rgb, curve, blend):
+    """Independent per-pixel check of the luminance-mode curve on encoded values: each channel
+    through the curve, then the curved values' 0.30/0.59/0.11 luma Y; every channel gets the same
+    shift (Y minus the input's luma), a result outside [0, 1] is scaled toward Y until it fits
+    (below 0 first, then above 1), and it mixes with the pulled tone by ``blend``."""
+    from colorlab.pipeline import rgb_tone
+    w = np.array([0.30, 0.59, 0.11])
+    out = []
+    for c in np.atleast_2d(rgb):
+        y = curve(c) @ w
+        d = c + (y - c @ w)
+        if d.min() < 0:
+            d = y + (d - y) * (y / (y - d.min()))
+        if d.max() > 1:
+            d = y + (d - y) * ((1 - y) / (d.max() - y))
+        h = rgb_tone(c[None], curve, pull=True)[0]
+        out.append(h + (d - h) * blend)
+    return np.array(out)
+
+
+def test_luma_curve_at_blend_0_is_the_pulled_tone_and_keeps_grays_on_the_curve():
+    from colorlab.pipeline import luma_curve, rgb_tone
+    curve = spline(S_CURVE)
+    np.testing.assert_allclose(luma_curve(SATURATED, curve, 0.0), rgb_tone(SATURATED, curve, pull=True), atol=1e-12)
+    for blend in (0.0, 0.5, 1.0):
+        np.testing.assert_allclose(luma_curve(GRAYS, curve, blend), np.repeat(curve(RAMP)[:, None], 3, axis=1),
+                                   atol=1e-9)
+
+
+@pytest.mark.parametrize("blend", [1.0, 0.4])
+def test_luma_curve_shifts_every_channel_by_the_curved_luma_and_scales_back_into_range(blend):
+    from colorlab.pipeline import luma_curve
+    curve = spline(((0, 0), (64, 20), (128, 150), (255, 255)))
+    colors = np.vstack([SATURATED, [[0.95, 0.9, 0.05], [0.05, 0.1, 0.9], [0.5, 0.45, 0.4]]])
+    np.testing.assert_allclose(luma_curve(colors, curve, blend), _luma_reference(colors, curve, blend), atol=1e-9)
+    full = luma_curve(colors, curve, 1.0)
+    assert full.min() >= -1e-12 and full.max() <= 1 + 1e-12
+    np.testing.assert_allclose(full @ [0.30, 0.59, 0.11], curve(colors) @ [0.30, 0.59, 0.11], atol=1e-9)
+    with pytest.raises(ParameterError):
+        luma_curve(colors, curve, 1.5)
+
+
+def _refine_preset(pv, refine=None, contrast="0"):
+    attrs = {"ProcessVersion": pv, "ToneCurveName2012": "Custom", "Contrast2012": contrast}
+    if refine is not None:
+        attrs["CurveRefineSaturation"] = refine
+    return parse_preset(make_xmp(attrs, curve_xml("ToneCurvePV2012", list(S_CURVE))))
+
+
+def test_refine_saturation_below_100_sends_the_master_curve_through_the_luma_path_from_15_4():
+    from colorlab.pipeline import WORKING, luma_curve
+    default = render(_refine_preset("15.4"), SATURATED, WORKING)
+    np.testing.assert_allclose(render(_refine_preset("15.4", "100"), SATURATED, WORKING), default)
+    for refine, blend in (("0", 1.0), ("25", 0.75)):
+        # Contrast stays in the pulled stage; only the point curve moves to the luma path
+        toned = tone(SATURATED, contrast=30, process_version="15.4")
+        expected = np.clip(luma_curve(toned, spline(S_CURVE), blend), 0, 1)
+        np.testing.assert_allclose(render(_refine_preset("15.4", refine, "+30"), SATURATED, WORKING), expected,
+                                   atol=2e-6)
+    assert np.abs(render(_refine_preset("15.4", "0"), SATURATED, WORKING) - default).max() > 0.01
+    # before 15.4 the point curve is part of the main tone curve, which has no luma mode
+    np.testing.assert_allclose(render(_refine_preset("11.0", "0"), SATURATED, WORKING),
+                               render(_refine_preset("11.0"), SATURATED, WORKING))
+    np.testing.assert_allclose(apply_curves(SATURATED, master=S_CURVE, process_version="15.4", refine_saturation=100),
+                               apply_curves(SATURATED, master=S_CURVE, process_version="15.4"))
+    with pytest.raises(ParameterError):
+        apply_curves(SATURATED, master=S_CURVE, process_version="15.4", refine_saturation=120)
+
+
 def test_whites_minus_and_blacks_plus_scale_all_channels_by_one_scene_ratio():
     for settings in ({"whites": -70}, {"blacks": 60}):
         x, y = scene(SATURATED), scene(whites_blacks(SATURATED, **settings))

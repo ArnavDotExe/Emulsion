@@ -84,6 +84,22 @@ def test_variants_cover_each_slider_family():
     assert {c for v in VARIANTS for c in v.curves} >= {"ToneCurvePV2012", "ToneCurvePV2012Red", "ToneCurvePV2012Blue"}
 
 
+def test_process_version_15_4_variants_check_the_15_4_tone_stages_and_stay_out_of_the_measured_shapes():
+    pv15 = [v for v in VARIANTS if v.settings.get("ProcessVersion") == "15.4"]
+    names = {v.name for v in pv15}
+    for name in ("Cal PV15 Contrast +100", "Cal PV15 Parametric Darks -100", "Cal PV15 Whites +100",
+                 "Cal PV15 Blacks +100", "Cal PV15 Curve Master S", "Cal PV15 Curve Red",
+                 "Cal PV15 Curve Master S Refine 0", "Cal PV15 Curve Master S Refine 50",
+                 "Cal PV15 Contrast +50 Curve Master S Refine 0"):
+        assert name in names, name
+    for v in pv15:
+        assert parse_preset(variant_xmp(v)).process_version == "15.4"
+        assert all(v not in solo(k) for k in v.settings)  # the measured shapes stay PV 11's
+        if "Refine" in v.name:
+            assert v.settings["CurveRefineSaturation"] in ("0", "50") and "ToneCurvePV2012" in v.curves
+    assert BY_NAME["Cal Contrast +100"].settings == {"Contrast2012": "+100"}  # PV 11 variants unchanged
+
+
 def test_grayscale_variants_pin_the_whole_mixer():
     for v in VARIANTS:
         if v.settings.get("ConvertToGrayscale") == "True":
