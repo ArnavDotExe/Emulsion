@@ -29,6 +29,7 @@ from colorlab.pipeline import (
     spline,
     tone,
     white_balance,
+    whites_blacks,
 )
 from colorlab.preset import LookRef, parse_preset
 
@@ -710,17 +711,121 @@ def _place(rgb):
     return (s[..., 1] - s[..., 0]) / (s[..., 2] - s[..., 0])
 
 
-# exposure keeps the hue of the linear values instead (test_exposure_keeps_the_hue_of_linear_values)
-@pytest.mark.parametrize("stage", [
-    lambda e: tone(e, contrast=60),
-    lambda e: tone(e, whites=100, blacks=-50),
-    lambda e: parametric_curve(e, darks=80, lights=-60),
-    lambda e: apply_curves(e, master=((0, 0), (64, 40), (192, 220), (255, 255))),
-])
-def test_tone_stages_keep_each_colors_hue(stage):
-    out = stage(SATURATED)
-    np.testing.assert_allclose(_place(out), _place(SATURATED), atol=1e-9)
+def _linear(enc):
+    from colorlab.pipeline import WORKING_TRANSFER
+    return cs.decode(np.asarray(enc, dtype=np.float64), WORKING_TRANSFER)
+
+
+S_CURVE = ((0, 0), (64, 40), (192, 220), (255, 255))
+CURVE_STAGES = [
+    lambda e, pv: tone(e, contrast=60, process_version=pv),
+    lambda e, pv: parametric_curve(e, darks=80, lights=-60, process_version=pv),
+    lambda e, pv: apply_curves(e, master=S_CURVE, process_version=pv),
+]
+
+
+# Before process version 15.4 Lightroom folds Contrast, the parametric curve and the point curve
+# into one tone curve applied to each color's linear min and max (exposure and Whites + keep the
+# hue of linear values the same way)
+@pytest.mark.parametrize("stage", CURVE_STAGES + [lambda e, pv: whites_blacks(e, whites=100)])
+def test_tone_curves_keep_the_hue_of_linear_values_before_15_4(stage):
+    out = stage(SATURATED, "11.0")
+    np.testing.assert_allclose(_place(_linear(out)), _place(_linear(SATURATED)), atol=1e-9)
     assert np.all(np.argsort(out, axis=-1) == np.argsort(SATURATED, axis=-1))
+    np.testing.assert_allclose(stage(GRAYS, "11.0")[:, 0], stage(GRAYS, "15.4")[:, 0], atol=1e-9)
+
+
+def _pulled(rgb, curve):
+    """Independent check of the 15.4 curve stage: min and max are pulled toward the middle channel
+    (by t^2/2 and (1-t)^2/2, t the middle's place), mapped by the curve, and the outputs are the
+    min and max whose pulled values are those, with the middle at the same place t."""
+    out = []
+    for c in np.atleast_2d(rgb):
+        order = np.argsort(c, kind="stable")
+        lo, mid, hi = c[order]
+        t = (mid - lo) / (hi - lo)
+        targets = curve(np.array([hi + (mid - hi) * t * t / 2, lo + (mid - lo) * (1 - t) ** 2 / 2]))
+        # unknowns H, L: H + (M - H) t^2/2 and L + (M - L)(1-t)^2/2 with M = L + t (H - L)
+        a = np.array([[1 - t * t / 2 + t ** 3 / 2, t * t / 2 * (1 - t)],
+                      [(1 - t) ** 2 / 2 * t, 1 - (1 - t) ** 2 / 2 * t]])
+        h, lo_out = np.clip(np.linalg.solve(a, targets), 0, 1)
+        res = np.empty(3)
+        res[order] = [lo_out, lo_out + t * (h - lo_out), h]
+        out.append(res)
+    return np.array(out)
+
+
+@pytest.mark.parametrize("stage", CURVE_STAGES)
+def test_from_15_4_curves_pull_min_and_max_toward_the_middle_on_encoded_values(stage):
+    out = stage(SATURATED, "15.4")
+    np.testing.assert_allclose(_place(out), _place(SATURATED), atol=1e-9)  # encoded hue kept
+    def curve(v):
+        return stage(np.repeat(np.asarray(v)[:, None], 3, axis=1), "15.4")[:, 0]
+    np.testing.assert_allclose(out, _pulled(SATURATED, curve), atol=1e-9)
+    assert np.abs(out - stage(SATURATED, "11.0")).max() > 0.01
+    np.testing.assert_allclose(stage(SATURATED, "16.1"), out)
+
+
+def test_pulled_rgb_tone_with_an_identity_curve_changes_nothing():
+    from colorlab.pipeline import rgb_tone
+    np.testing.assert_allclose(rgb_tone(SATURATED, lambda v: v, pull=True), SATURATED, atol=1e-12)
+    np.testing.assert_allclose(rgb_tone(GRAYS, lambda v: v * v, pull=True), GRAYS ** 2, atol=1e-12)
+
+
+def test_whites_minus_and_blacks_plus_scale_all_channels_by_one_scene_ratio():
+    for settings in ({"whites": -70}, {"blacks": 60}):
+        x, y = scene(SATURATED), scene(whites_blacks(SATURATED, **settings))
+        ratio = y / x
+        np.testing.assert_allclose(ratio, ratio[:, :1].repeat(3, axis=1), rtol=1e-6)
+        assert np.abs(ratio - 1).max() > 0.02
+
+
+def test_blacks_minus_maps_each_channel_like_a_gray_on_the_scene_scale():
+    from colorlab.pipeline import _from_scene
+    x = scene(SATURATED)
+    y = scene(whites_blacks(SATURATED, blacks=-60))
+    for c in range(3):
+        grays = _from_scene(np.repeat(x[:, c:c + 1], 3, axis=1))
+        np.testing.assert_allclose(y[:, c], scene(whites_blacks(grays, blacks=-60))[:, 0], rtol=1e-6, atol=1e-9)
+
+
+def test_whites_and_blacks_keep_grays_on_lightrooms_measured_curves():
+    for kw in ({"whites": -100}, {"whites": 100}, {"blacks": -100}, {"blacks": 100}):
+        np.testing.assert_allclose(whites_blacks(GRAYS, **kw), tone(GRAYS, **kw), atol=1e-9)
+    np.testing.assert_array_equal(whites_blacks(SATURATED), SATURATED)
+    with pytest.raises(ParameterError):
+        whites_blacks(SATURATED, whites=101)
+
+
+def test_render_applies_whites_and_blacks_in_the_exposure_stage_before_saturation():
+    from colorlab.pipeline import ORDER
+    assert ORDER[0] == "whites_blacks" and ORDER.index("whites_blacks") < ORDER.index("saturation")
+    preset = parse_preset(make_xmp({"Blacks2012": "+60", "Saturation": "-50", "ProcessVersion": "11.0"}))
+    alone = parse_preset(make_xmp({"Saturation": "-50", "ProcessVersion": "11.0"}))
+    np.testing.assert_allclose(render(preset, SATURATED), render(alone, whites_blacks(SATURATED, blacks=60)),
+                               atol=2e-6)
+
+
+# Lightroom bakes at saturated colors (sRGB in and out, process version 11)
+TONE_SAMPLES = np.array([(57, 19, 6), (13, 25, 57), (38, 38, 6), (19, 6, 19)]) / 63
+
+
+@pytest.mark.parametrize("key,value,expected", [
+    ("Whites2012", "-100", [(0.8687, 0.2853, 0.0785), (0.125, 0.3541, 0.8648), (0.566, 0.5659, 0.0743),
+                            (0.2956, 0.0925, 0.2956)]),
+    ("Whites2012", "+100", [(1.0, 0.4268, 0.0797), (0.5855, 0.6663, 1.0), (0.9298, 0.9298, 0.0),
+                            (0.4536, 0.0662, 0.4537)]),
+    ("Blacks2012", "-100", [(0.7891, 0.0, 0.0), (0.0, 0.06, 0.8748), (0.3964, 0.4182, 0.0), (0.0, 0.0, 0.0)]),
+    ("Blacks2012", "+100", [(0.9896, 0.3435, 0.1422), (0.2777, 0.4413, 0.9391), (0.6688, 0.6688, 0.1402),
+                            (0.4049, 0.1452, 0.405)]),
+    ("Contrast2012", "+100", [(1.0, 0.289, 0.0), (0.0, 0.3215, 0.9897), (0.6542, 0.6542, 0.0),
+                              (0.1948, 0.0, 0.1949)]),
+    ("ParametricDarks", "-100", [(0.7955, 0.2039, 0.0), (0.0, 0.135, 0.8879), (0.4527, 0.4527, 0.0),
+                                 (0.0464, 0.0, 0.0464)]),
+])
+def test_render_tone_sliders_match_lightroom_on_saturated_colors(key, value, expected):
+    out = render(parse_preset(make_xmp({key: value, "ProcessVersion": "11.0"})), TONE_SAMPLES)
+    np.testing.assert_allclose(out, expected, atol=0.015)
 
 
 def test_hue_preserving_tone_still_maps_neutrals_through_the_curve():
