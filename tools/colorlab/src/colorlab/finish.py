@@ -273,15 +273,27 @@ def local_passes(encoded: np.ndarray, settings: Mapping[str, str]) -> np.ndarray
     return sharpen(img, n("Sharpness"), n("SharpenRadius", 1.0), n("SharpenDetail", 25.0), n("SharpenEdgeMasking"))
 
 
-def finishing_passes(encoded: np.ndarray, settings: Mapping[str, str], seed: int = 0) -> np.ndarray:
-    """The post-crop vignette and the grain a preset names, which Lightroom applies last."""
+def vignette_pass(encoded: np.ndarray, settings: Mapping[str, str]) -> np.ndarray:
+    """The post-crop vignette a preset's ``settings`` name."""
     def n(key: str, default: float = 0.0) -> float:
         return _number(settings, key, default)
 
-    img = vignette(encoded, n("PostCropVignetteAmount"), n("PostCropVignetteMidpoint", 50.0),
-                   n("PostCropVignetteFeather", 50.0), n("PostCropVignetteRoundness"),
-                   int(n("PostCropVignetteStyle", 1.0)), n("PostCropVignetteHighlightContrast"))
-    return lightroom_grain(img, n("GrainAmount"), n("GrainSize", 25.0), n("GrainFrequency", 50.0), seed)
+    return vignette(encoded, n("PostCropVignetteAmount"), n("PostCropVignetteMidpoint", 50.0),
+                    n("PostCropVignetteFeather", 50.0), n("PostCropVignetteRoundness"),
+                    int(n("PostCropVignetteStyle", 1.0)), n("PostCropVignetteHighlightContrast"))
+
+
+def grain_pass(encoded: np.ndarray, settings: Mapping[str, str], seed: int = 0) -> np.ndarray:
+    """The grain a preset's ``settings`` name."""
+    def n(key: str, default: float = 0.0) -> float:
+        return _number(settings, key, default)
+
+    return lightroom_grain(encoded, n("GrainAmount"), n("GrainSize", 25.0), n("GrainFrequency", 50.0), seed)
+
+
+def finishing_passes(encoded: np.ndarray, settings: Mapping[str, str], seed: int = 0) -> np.ndarray:
+    """The post-crop vignette and then the grain a preset names."""
+    return grain_pass(vignette_pass(encoded, settings), settings, seed)
 
 
 def apply_settings(encoded: np.ndarray, settings: Mapping[str, str], seed: int = 0) -> np.ndarray:
@@ -314,11 +326,11 @@ def render_preset(preset: Preset, image: np.ndarray, seed: int = 0, local_first:
                   look: Callable[[np.ndarray], np.ndarray] | None = None) -> np.ndarray:
     """A whole preset on an sRGB-encoded image: its global look and its spatial passes.
 
-    The neighbourhood passes (with the look profile's Highlights/Shadows folded in, see
-    :func:`spatial_settings`) run before the look by default, which matched Lightroom's exports
-    of 44 presets best; ``local_first=False`` runs them after it. The vignette and grain always
-    come last. ``look`` replaces :func:`colorlab.pipeline.render`, for example with Lightroom's
-    own baked LUT of the preset.
+    By default the neighbourhood passes (with the look profile's Highlights/Shadows folded in,
+    see :func:`spatial_settings`) and then the vignette run before the look, and the grain after
+    it, which matched Lightroom's exports of 44 presets best. ``local_first=False`` runs
+    everything after the look. ``look`` replaces :func:`colorlab.pipeline.render`, for example
+    with Lightroom's own baked LUT of the preset.
     """
     def default(x: np.ndarray) -> np.ndarray:
         return render(preset, x).astype(np.float64)
@@ -327,10 +339,8 @@ def render_preset(preset: Preset, image: np.ndarray, seed: int = 0, local_first:
     settings = spatial_settings(preset)
     img = _image(image)
     if local_first:
-        img = _image(look(local_passes(img, settings)))
-    else:
-        img = local_passes(_image(look(img)), settings)
-    return finishing_passes(img, settings, seed)
+        return grain_pass(_image(look(vignette_pass(local_passes(img, settings), settings))), settings, seed)
+    return finishing_passes(local_passes(_image(look(img)), settings), settings, seed)
 
 
 def main(argv: list[str] | None = None) -> int:
