@@ -208,7 +208,8 @@ def test_render_preset_runs_the_look_then_the_spatial_passes_in_either_order():
     np.testing.assert_allclose(after, apply_settings(render(preset, img), preset.settings, seed=2), atol=1e-6)
     before = render_preset(preset, img, seed=2, local_first=True)
     local = sharpen(highlights_shadows(img, 0, 40), 40)
-    expected = lightroom_grain(vignette(render(preset, local), -30), 20, seed=2)
+    # the vignette goes with the local passes, before the look; grain stays last
+    expected = lightroom_grain(render(preset, vignette(local, -30)), 20, seed=2)
     np.testing.assert_allclose(before, expected, atol=1e-6)
     assert np.abs(before - after).mean() > 1e-4
     own = render_preset(preset, img, seed=2, local_first=False, look=lambda x: x)  # a stand-in look
