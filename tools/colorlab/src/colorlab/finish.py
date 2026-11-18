@@ -41,13 +41,15 @@ import sys
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 import numpy as np
 
 from .errors import ColorlabError, ParameterError
 from .film import gaussian_blur
 from .local_contrast import _YCC, _YCC_INV, clarity, dehaze, guided_filter, highlights_shadows, texture
+from .pipeline import render
+from .preset import Preset
 
 GRAIN_WIDTH = 1536  # frame width (px) at which the grain tables were measured
 NR_RADIUS = 3
@@ -257,10 +259,9 @@ def _number(settings: Mapping[str, str], key: str, default: float = 0.0) -> floa
         raise ParameterError(f"{key}: not a number: {raw!r}") from None
 
 
-def apply_settings(encoded: np.ndarray, settings: Mapping[str, str], seed: int = 0) -> np.ndarray:
-    """Every spatial pass a preset's Camera Raw ``settings`` name, in Lightroom's order: noise
-    reduction, Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, vignette, grain.
-    A missing key means the slider's default."""
+def local_passes(encoded: np.ndarray, settings: Mapping[str, str]) -> np.ndarray:
+    """The neighbourhood passes a preset names, in Lightroom's order: noise reduction,
+    Highlights/Shadows, Dehaze, Texture, Clarity and sharpening. Missing keys mean the default."""
     def n(key: str, default: float = 0.0) -> float:
         return _number(settings, key, default)
 
@@ -269,11 +270,45 @@ def apply_settings(encoded: np.ndarray, settings: Mapping[str, str], seed: int =
     img = highlights_shadows(img, n("Highlights2012"), n("Shadows2012"))
     img = dehaze(img, n("Dehaze"))
     img = clarity(texture(img, n("Texture")), n("Clarity2012"))
-    img = sharpen(img, n("Sharpness"), n("SharpenRadius", 1.0), n("SharpenDetail", 25.0), n("SharpenEdgeMasking"))
-    img = vignette(img, n("PostCropVignetteAmount"), n("PostCropVignetteMidpoint", 50.0),
+    return sharpen(img, n("Sharpness"), n("SharpenRadius", 1.0), n("SharpenDetail", 25.0), n("SharpenEdgeMasking"))
+
+
+def finishing_passes(encoded: np.ndarray, settings: Mapping[str, str], seed: int = 0) -> np.ndarray:
+    """The post-crop vignette and the grain a preset names, which Lightroom applies last."""
+    def n(key: str, default: float = 0.0) -> float:
+        return _number(settings, key, default)
+
+    img = vignette(encoded, n("PostCropVignetteAmount"), n("PostCropVignetteMidpoint", 50.0),
                    n("PostCropVignetteFeather", 50.0), n("PostCropVignetteRoundness"),
                    int(n("PostCropVignetteStyle", 1.0)), n("PostCropVignetteHighlightContrast"))
     return lightroom_grain(img, n("GrainAmount"), n("GrainSize", 25.0), n("GrainFrequency", 50.0), seed)
+
+
+def apply_settings(encoded: np.ndarray, settings: Mapping[str, str], seed: int = 0) -> np.ndarray:
+    """Every spatial pass a preset's Camera Raw ``settings`` name, in Lightroom's order: noise
+    reduction, Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, vignette, grain.
+    A missing key means the slider's default."""
+    return finishing_passes(local_passes(encoded, settings), settings, seed)
+
+
+def render_preset(preset: Preset, image: np.ndarray, seed: int = 0, local_first: bool = False,
+                  look: Callable[[np.ndarray], np.ndarray] | None = None) -> np.ndarray:
+    """A whole preset on an sRGB-encoded image: its global look, then its spatial passes.
+
+    ``local_first`` runs the neighbourhood passes before the look instead of after it (the
+    vignette and grain always come last). ``look`` replaces :func:`colorlab.pipeline.render`,
+    for example with Lightroom's own baked LUT of the preset.
+    """
+    def default(x: np.ndarray) -> np.ndarray:
+        return render(preset, x).astype(np.float64)
+
+    look = look or default
+    img = _image(image)
+    if local_first:
+        img = _image(look(local_passes(img, preset.settings)))
+    else:
+        img = local_passes(_image(look(img)), preset.settings)
+    return finishing_passes(img, preset.settings, seed)
 
 
 def main(argv: list[str] | None = None) -> int:

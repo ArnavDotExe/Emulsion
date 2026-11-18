@@ -35,9 +35,8 @@ BAKE_PREFIX = "FilmSim Bake - "
 BAKE_GROUP = "FilmSim Bake"
 DEFAULT_LEVEL = 8  # 64^3 cube, 512 x 512 image
 
-#: setting -> neutral value written into bake copies (only replaced when present)
-NEUTRALIZED_SETTINGS: dict[str, str] = {
-    # spatial / local effects
+#: spatial and local effects: neutralized in bake copies, kept in full copies
+SPATIAL_SETTINGS: dict[str, str] = {
     "GrainAmount": "0",
     "PostCropVignetteAmount": "0",
     "VignetteAmount": "0",
@@ -52,7 +51,9 @@ NEUTRALIZED_SETTINGS: dict[str, str] = {
     "Dehaze": "0",
     "DefringePurpleAmount": "0",
     "DefringeGreenAmount": "0",
-    # geometry (would scramble the Hald layout)
+}
+#: geometry: always neutralized, since it would scramble a Hald or move a chart
+GEOMETRY_SETTINGS: dict[str, str] = {
     "HasCrop": "False",
     "CropTop": "0",
     "CropLeft": "0",
@@ -71,6 +72,8 @@ NEUTRALIZED_SETTINGS: dict[str, str] = {
     "LensProfileEnable": "0",
     "AutoLateralCA": "0",
 }
+#: setting -> neutral value written into bake copies (only replaced when present)
+NEUTRALIZED_SETTINGS: dict[str, str] = {**SPATIAL_SETTINGS, **GEOMETRY_SETTINGS}
 
 _UNSAFE = re.compile(r'[/\\:*?"<>|]')
 _START_TAG = re.compile(r"<rdf:Description\b[^>]*>")
@@ -95,13 +98,14 @@ def _replace_alt(text: str, element: str, value: str) -> tuple[str, int]:
     return pattern.subn(lambda m: m.group(1) + escape(value, quote=False) + m.group(3), text, count=1)
 
 
-def make_bake_xmp(xmp_text: str, name: str) -> str:
-    """Return a renamed, importable copy of a preset with spatial/geometric settings neutralized."""
+def make_bake_xmp(xmp_text: str, name: str, group: str = BAKE_GROUP, keep_spatial: bool = False) -> str:
+    """Return a renamed, importable copy of a preset in ``group`` with its geometry neutralized,
+    and its spatial settings too unless ``keep_spatial``."""
     m = _START_TAG.search(xmp_text)
     if m is None:
         raise PresetFormatError("preset has no rdf:Description element")
     tag = m.group(0)
-    for key, value in NEUTRALIZED_SETTINGS.items():
+    for key, value in (GEOMETRY_SETTINGS if keep_spatial else NEUTRALIZED_SETTINGS).items():
         tag = _set_attr(tag, f"crs:{key}", value, insert=False)
     tag = _set_attr(tag, "tiff:Orientation", "1", insert=False)
     tag = _set_attr(tag, "crs:UUID", uuid.uuid4().hex.upper(), insert=True)
@@ -111,7 +115,7 @@ def make_bake_xmp(xmp_text: str, name: str) -> str:
     rest, renamed = _replace_alt(xmp_text[m.end() :], "Name", name)
     if not renamed:
         raise PresetFormatError("preset has no crs:Name element")
-    rest, _ = _replace_alt(rest, "Group", BAKE_GROUP)
+    rest, _ = _replace_alt(rest, "Group", group)
     return xmp_text[: m.start()] + tag + rest
 
 
