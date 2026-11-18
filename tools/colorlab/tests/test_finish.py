@@ -133,7 +133,7 @@ def test_lightroom_grain_is_monochrome_deterministic_and_scales_with_amount():
 def test_lightroom_grain_size_roughness_and_frame():
     img = flat(0.45, 1536)
     fine, coarse = (lag1(g(lightroom_grain(img, 50, size=s) - img)) for s in (10, 100))
-    assert fine < -0.05 and coarse > 0.3
+    assert fine < -0.05 and coarse > 0.15  # Lightroom: -0.13 and +0.22
     smooth = lag1(g(lightroom_grain(img, 50, roughness=100) - img))
     rough = lag1(g(lightroom_grain(img, 50, roughness=0) - img))
     assert smooth > 0.15 and rough < -0.1
@@ -167,3 +167,24 @@ def test_apply_settings_runs_the_spatial_passes_named_in_a_preset():
     np.testing.assert_allclose(apply_settings(img, settings, seed=1), out, atol=0)
     no_grain = apply_settings(img, {**settings, "GrainAmount": "0"}, seed=1)
     assert np.abs(out - no_grain).std() > 0.01
+
+
+def test_finish_cli_applies_a_presets_spatial_passes(tmp_path):
+    import tifffile
+
+    from colorlab.finish import main
+    from conftest import make_xmp
+
+    img = edge(96)
+    settings = {"PostCropVignetteAmount": "-40", "GrainAmount": "15", "Dehaze": "10"}
+    preset, src, dst = tmp_path / "p.xmp", tmp_path / "in.tif", tmp_path / "out" / "o.tif"
+    preset.write_text(make_xmp(settings), encoding="utf-8")
+    tifffile.imwrite(src, np.round(img * 65535).astype(np.uint16), photometric="rgb")
+    assert main(["apply", str(preset), str(src), str(dst), "--seed", "3"]) == 0
+    np.testing.assert_allclose(tifffile.imread(dst) / 65535.0, apply_settings(img, settings, seed=3), atol=2 / 65535)
+    tifffile.imwrite(src, np.zeros((8, 8), np.uint16))
+    assert main(["apply", str(preset), str(src), str(dst)]) == 1
+    with pytest.raises(ParameterError):
+        apply_settings(img, {"Sharpness": "lots"})
+    with pytest.raises(ParameterError):
+        vignette(img[..., :2], -10)

@@ -243,7 +243,14 @@ def _local_tone_tables() -> dict[str, dict[int, np.ndarray]]:
     data = json.loads((resources.files("colorlab") / "data" / "local_tone.json").read_text(encoding="utf-8"))
     shape = (data["pixel_knots"], data["base_knots"])
     return {s: {int(a): np.asarray(v, dtype=np.float64).reshape(shape) for a, v in data[s].items()}
-            for s in ("highlights", "shadows")}
+            for s in ("highlights", "shadows", "dehaze")}
+
+
+@lru_cache(maxsize=1)
+def _dehaze_gains() -> dict[int, np.ndarray]:
+    """Dehaze's gain on linear differences from luminance, per signed amount, over the new ``y``."""
+    data = json.loads((resources.files("colorlab") / "data" / "local_tone.json").read_text(encoding="utf-8"))
+    return {int(a): np.asarray(v, dtype=np.float64) for a, v in data["dehaze_chroma"].items()}
 
 
 def local_tone_sigma(width: int) -> float:
@@ -290,6 +297,31 @@ def highlights_shadows(encoded: np.ndarray, highlights: float = 0.0, shadows: fl
     new = encode(np.clip(np.maximum(y + delta, 0.0) ** LUMA_GAMMA, 0.0, 1.0), Transfer.SRGB)
     scale = (new / np.maximum(old, 1e-6)) ** LOCAL_TONE_CARRY
     return np.clip(new[..., None] + (img - old[..., None]) * scale[..., None], 0.0, 1.0)
+
+
+def dehaze(encoded: np.ndarray, amount: float) -> np.ndarray:
+    """Lightroom-style Dehaze (-100..100) on an sRGB-encoded H x W x 3 image.
+
+    Luminance moves by a local tone table, like Highlights/Shadows. Each channel's linear
+    difference from luminance is then scaled by a measured gain over the new tone: about 0.5-0.7
+    of a dark tone's shrink at +100, so colors gain saturation as the image darkens, and toward
+    gray at -100.
+    """
+    amount = _check("dehaze", amount, -100.0, 100.0)
+    img = np.clip(np.asarray(encoded, dtype=np.float64), 0.0, 1.0)
+    if not amount:
+        return img
+    lin = decode(img, Transfer.SRGB)
+    lum = np.maximum(lin @ SRGB_LUMA, 1e-6)
+    y = lum ** (1.0 / LUMA_GAMMA)
+    pixel = (y + gaussian_blur(y, 1.0)) / 2.0
+    base = gaussian_blur(y, local_tone_sigma(y.shape[1]))
+    table = _amount_table(_local_tone_tables()["dehaze"], amount)
+    new_y = np.clip(y + _bilinear(table, pixel, base), 0.0, 1.0)
+    curve = 1.0 + _amount_table({a: g - 1.0 for a, g in _dehaze_gains().items()}, amount)
+    gain = np.interp(new_y, np.linspace(0.0, 1.0, len(curve)), curve)
+    out = (new_y ** LUMA_GAMMA)[..., None] + (lin - lum[..., None]) * gain[..., None]
+    return np.clip(encode(np.clip(out, 0.0, 1.0), Transfer.SRGB), 0.0, 1.0)
 
 
 def apply_to_image(encoded: np.ndarray, clarity_amount: float = 0.0, texture_amount: float = 0.0,
