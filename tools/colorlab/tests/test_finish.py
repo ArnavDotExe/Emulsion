@@ -204,14 +204,14 @@ def test_render_preset_runs_the_look_then_the_spatial_passes_in_either_order():
     settings = {"Exposure2012": "+0.30", "Shadows2012": "+40", "Sharpness": "40", "PostCropVignetteAmount": "-30",
                 "GrainAmount": "20"}
     preset = parse_preset(make_xmp(settings))
-    after = render_preset(preset, img, seed=2)
+    after = render_preset(preset, img, seed=2, local_first=False)
     np.testing.assert_allclose(after, apply_settings(render(preset, img), preset.settings, seed=2), atol=1e-6)
     before = render_preset(preset, img, seed=2, local_first=True)
     local = sharpen(highlights_shadows(img, 0, 40), 40)
     expected = lightroom_grain(vignette(render(preset, local), -30), 20, seed=2)
     np.testing.assert_allclose(before, expected, atol=1e-6)
     assert np.abs(before - after).mean() > 1e-4
-    own = render_preset(preset, img, seed=2, look=lambda x: x)  # a stand-in for the global look
+    own = render_preset(preset, img, seed=2, local_first=False, look=lambda x: x)  # a stand-in look
     np.testing.assert_allclose(own, apply_settings(img, preset.settings, seed=2), atol=1e-6)
 
 
@@ -230,3 +230,26 @@ def test_dehaze_neighbourhood_follows_the_frame():
     assert dehaze_radii(1536) == (12, 96)
     assert dehaze_radii(768) == (6, 48)
     assert dehaze_radii(100) == (1, 6)
+
+
+def test_render_preset_folds_in_the_look_profiles_highlights_and_shadows_before_the_look():
+    # Lightroom applies a Look profile's own Highlights/Shadows (scaled by the look's amount) as
+    # the local pass; whole-preset exports match it best with the local passes before the look.
+    from dataclasses import replace
+
+    from colorlab.finish import render_preset, spatial_settings
+    from colorlab.pipeline import render
+    from colorlab.preset import LookRef, parse_preset
+    from conftest import make_xmp
+
+    profile = parse_preset(make_xmp({"PresetType": "Look", "UUID": "L", "Highlights2012": "-30",
+                                     "Shadows2012": "+100", "Sharpness": "40"}))
+    look = LookRef(name="L", uuid="L", amount=0.5, stubbed=True, source=profile)
+    preset = replace(parse_preset(make_xmp({"Shadows2012": "+60"})), look=look)
+    settings = spatial_settings(preset)
+    assert float(settings["Highlights2012"]) == -15 and float(settings["Shadows2012"]) == 100  # clamped
+    assert "Sharpness" not in settings  # Lightroom ignores a look's sharpening
+    assert spatial_settings(parse_preset(make_xmp({"Shadows2012": "+60"})))["Shadows2012"] == "+60"
+    img = edge(96)
+    expected = render(preset, highlights_shadows(img, -15, 100))
+    np.testing.assert_allclose(render_preset(preset, img), expected, atol=1e-6)  # local passes first by default
