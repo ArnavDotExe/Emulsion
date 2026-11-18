@@ -213,3 +213,20 @@ def test_render_preset_runs_the_look_then_the_spatial_passes_in_either_order():
     assert np.abs(before - after).mean() > 1e-4
     own = render_preset(preset, img, seed=2, look=lambda x: x)  # a stand-in for the global look
     np.testing.assert_allclose(own, apply_settings(img, preset.settings, seed=2), atol=1e-6)
+
+
+def test_dehaze_keeps_a_saturated_colors_main_channel_like_lightroom():
+    # Lightroom's Dehaze +100 takes the chart's blue (0.15, 0.25, 0.85) to (0.00, 0.005, 0.83)
+    img = np.zeros((128, 192, 3)) + [0.15, 0.25, 0.85]
+    out = dehaze(img, 100)[64, 96]
+    assert out[2] > 0.7 and out[0] < 0.05 and out[1] < 0.2
+    gray = dehaze(flat(0.5, 192), 100)
+    np.testing.assert_allclose(gray[..., 0], gray[..., 2], atol=1e-6)
+
+
+def test_dehaze_neighbourhood_follows_the_frame():
+    from colorlab.local_contrast import dehaze_radii
+
+    assert dehaze_radii(1536) == (12, 96)
+    assert dehaze_radii(768) == (6, 48)
+    assert dehaze_radii(100) == (1, 6)
