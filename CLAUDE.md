@@ -77,7 +77,8 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `collect` checks and copies the exports |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `film` | Halation (scatter + bounces, scene-anchored highlight boost) and particle grain, sized in µm on the film; ported from spektrafilm and darktable (credited in the header); `apply` CLI for TIFFs |
-| `local_contrast` | Highlights/Shadows (a tone table over the pixel and a Gaussian base of width/32, per amount, in `data/local_tone.json`), Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
+| `local_contrast` | Highlights/Shadows (a tone table over the pixel and a Gaussian base of width/32, per amount, in `data/local_tone.json`), Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr) and Dehaze (a monotone local tone table and a linear-light color gain), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
+| `finish` | Vignette (measured mask profile plus a value × weight table per amount; midpoint, feather, roundness, styles, highlights), sharpening (clamped unsharp mask on luma, fixed in pixels), noise reduction (guided filter on Y, Gaussian on CbCr), Lightroom-statistic grain (seeded `G_s − b G_2s` noise, frame-relative size), all in `data/finish.json`; `apply_settings` runs every spatial pass a preset names in Lightroom's order; `apply` CLI |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
@@ -190,7 +191,19 @@ Lightroom quirks:
     flat patches) but has no halo at edges. Shadows −100 0.27/4.23, +100 0.66/6.87; Highlights
     −100 1.02/9.72, +100 0.55/6.14. It holds at 768 and 3072 px. The local Laplacian lost here
     too (1.1–1.7). Gaps: the color carry, and Highlights + moving bright saturated colors toward white.
-  - Next in 6b: Dehaze, Sharpening, NR, vignette, grain; then wire the passes into rendering.
+  - Vignette, sharpening, noise reduction and grain are in `colorlab.finish`, and Dehaze in
+    `local_contrast.dehaze` (e6a9e8a). Mean ΔE, ours against Lightroom's change from identity:
+    - Vignette: ±25–100 0.07–0.21 (to 13.9); Midpoint 0 0.47, Feather 0 0.57, roundness ±100 0.16,
+      Paint Overlay 0.32. It holds at 768 and 3072 px.
+    - Sharpening: 25/50/100 0.03/0.06/0.11 (to 0.49), Radius 3 0.10, Detail 100 0.17. It is fixed
+      in pixels; Masking isn't modelled.
+    - Noise reduction: Luminance 0.16–0.30 (to 1.02), Color 0.52 (1.6).
+    - Grain: Lightroom's statistics, not its pattern. Its sd is within 0.5% (2.6% at 768 px) and
+      its lag-1 within 0.02, with an effective size of `size · (width/1536)^1.8`.
+    - Dehaze: −100 0.83 (23.4), ±25–50 0.33–0.82, +100 2.22 (13.3) is the gap.
+  - `finish.apply_settings` runs every spatial pass in a preset in Lightroom's order (NR,
+    Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, vignette, grain) on the encoded
+    image after the look. `render` doesn't call it yet.
 - Biggest single-slider gaps:
   - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
   - Vibrance −100 1.5 and Saturation +100 0.6.
@@ -207,8 +220,8 @@ Lightroom quirks:
     the format sets grain size.
   - Not ported: sublayer grain, dye clouds, micro-structure, spektrafilm's spectral color and profiles.
 - Then:
-  - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,
-    noise reduction). The worst presets are dominated by these.
+  - 6b's gaps: Dehaze +100, Color NR, a preset-level check of the spatial passes against
+    Lightroom exports of the private presets.
   - 7: check against the Fuji DNG presets' embedded Lightroom previews.
   - 8: the `.fsim.json` look format.
   - 9: the CLI.

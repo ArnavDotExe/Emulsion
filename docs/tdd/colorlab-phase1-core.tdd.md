@@ -1058,12 +1058,175 @@ Lightroom does, at any capture size.
   - Not wired into `render`. Lightroom applies these before the profile and the look; our pass
     runs on the encoded image like the other spatial passes.
 
+## Vignette, sharpening, noise reduction, grain and Dehaze (`colorlab.finish`, `local_contrast.dehaze`)
+
+Journey: as a photographer using an Emulsion look made from a preset, I want its vignette, grain,
+sharpening, noise reduction and Dehaze to come out the way Lightroom renders them, so the look
+in the camera matches the preset. All the spatial passes a preset names should run from one call.
+
+### What Lightroom does (measured on `out/spatial-exports` and `out/spatial-scale-exports`)
+
+- Vignette (checker chart):
+  - The shape is an ellipse on frame-normalized coordinates. It is the same at 768, 1536 and
+    3072 px.
+  - Paint Overlay (style 3) at −50 multiplies the encoded value by `1 − 0.5 m`, whatever the level.
+  - Highlight Priority (1) and Color Priority (2) give identical results on grays. Negative amounts
+    darken bright tones less; positive amounts blend toward white.
+  - Feather 0 is a hard edge at d ≈ 1.0, and Midpoint moves the edge.
+  - Roundness −100 is a narrow band along the frame's border (a ratio of 0.79 in the outermost
+    32 px column, 1.00 inside). Roundness +100 is a circle in pixels.
+- Sharpening (scene chart):
+  - The overshoot is asymmetric (the bright side is far larger) and saturates: Sharpen 100 is
+    close to Sharpen 50.
+  - It is fixed in pixels (768 px: 0.10 fixed against 0.42 scaled with the frame).
+  - Detail 100 rings, and Masking 50 changes nothing on the chart's clean edges.
+- Noise reduction (levels chart's noise band):
+  - Luminance NR is threshold-like: faint noise goes before strong noise, and flat patches stay
+    unchanged.
+  - Color NR takes chroma sd from 0.025 to 0.0074 at 25, 50 and 100 alike.
+- Grain:
+  - It is monochrome noise added to encoded values, then clipped, with sd linear in the amount
+    (0.0147/0.0368/0.0736/0.1460 at 10/25/50/100) and bit-identical across exports.
+  - Size and Roughness change its texture (lag-1 correlation −0.13 to +0.25) and its strength.
+  - On smaller frames it is finer and stronger: 768 px behaves like Size 10 at 1536 px.
+- Dehaze (scene chart):
+  - Luminance moves like a local tone curve: +100 takes the flats from 0.5 to 0.21 and has a soft
+    gradient near edges.
+  - Colors keep their linear-light difference from luminance with a gain, nearly the same for the
+    three channels of a patch. At +100, (0.6, 0.45, 0.35) keeps 0.52 of it while its luminance
+    falls to 0.27, so it saturates.
+
+### The model
+
+- `vignette`:
+  - A weight `m` is read from the measured Paint-Overlay profile over `c0 + (d − c)/s`.
+  - Midpoint and feather set `c` and `s` (measured at 0, 50 and 100, linear in between).
+  - Roundness blends to a circle in pixels (+) or a superellipse growing into a rectangle (−).
+  - Styles 1/2: a 6 value-knot × 11 weight-knot table per amount (±25/50/100), per channel.
+  - The highlights slider adds the change measured at −50 with highlights 50 and 100.
+  - Style 3: `v (1 + a m)` or `v + (1 − v) a m`.
+- `sharpen`: `img + clip(k (Y − G_σ Y), −down, up)` on BT.601 luma.
+  - σ = 0.75 · radius^0.8. `k`, `down` and `up` come from a table at amounts 25/50/100.
+  - Radius scales `k` by radius^−1.1 and `up` by radius^−0.29.
+  - Detail 100 scales σ by 0.78 and `k` by 0.7.
+- `noise_reduction`:
+  - Luminance: a guided filter on Y (r 3, eps 0.01), blended by (amount/100)^0.5. The fitted
+    blends per export were 0.5/0.7/1.0.
+  - Color: a Gaussian (σ 8 px) on Cb and Cr, at full strength from 25.
+- `lightroom_grain`:
+  - Seeded white noise filtered by `G_s − b G_2s`, normalized to unit sd, then scaled by
+    sd · amount/50 and added to all channels.
+  - `(s, b, sd)` come from tables over size (10/25/50/100) and roughness (0/50/100).
+  - The size used is `size · (width/1536)^1.8`.
+- `dehaze`:
+  - Luminance: `y' = y + T(p, B)`, the same table form and base (width/32) as Highlights/Shadows.
+    It is fitted by least squares under a monotone constraint (each base column non-decreasing in
+    `p`, solved by projected gradient rather than projected after fitting).
+  - Colors: `out_lin = Y' + (lin − Y) · g(y')`, with `g` an 11-knot curve per amount fitted on
+    unclipped pixels with a smoothness penalty.
+  - The tables are in `data/local_tone.json` (`dehaze`, `dehaze_chroma`).
+- `apply_settings(img, preset.settings)` runs, in Lightroom's order: noise reduction,
+  Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, vignette, grain.
+  - `python -m colorlab.finish apply preset.xmp in.tif out.tif` does the same from a preset.
+- The fitted numbers are in `src/colorlab/data/finish.json`.
+
+### Tried and rejected
+
+- Vignette roundness as one superellipse family fitted at ±100. Roundness +100 scored
+  0.40–0.62 and −100 scored 0.68–1.34, against Lightroom's own change of 0.64 (worse than doing
+  nothing). The circle in pixels (0.16) and the rectangle with a narrow band (0.16) replaced it.
+- Plain unsharp mask: Sharpen 50 left 0.36 of Lightroom's 0.43. The clamped mask leaves 0.063.
+- Luminance NR as a Wiener-style soft threshold: |dY| 0.0054–0.0066 against the guided filter's
+  0.0026–0.0056.
+- Color NR as a guided filter on chroma: 0.0036 against the blur's 0.0023.
+- Dehaze:
+  - Encoded-difference chroma carry: +100 was 3.21 against 2.22 for the linear carry.
+  - The Highlights/Shadows guard (projection with slope ≥ 0.2): −100 1.08, +100 3.36. Unguarded:
+    0.69 and 2.18, but unguarded tables would invert tones where the chart is sparse. The
+    constrained fit gives 0.83 and 2.22.
+  - The dark channel prior from the darktable study wasn't tried. The chart response is
+    reproduced to 0.33–0.83 except at +100.
+
+### Results (mean ΔE2000; ours / Lightroom's change from identity)
+
+| Export | Result | Export | Result |
+|---|---|---|---|
+| Vignette −100 | 0.21 / 13.89 | Vignette +100 | 0.08 / 10.18 |
+| Vignette −50 | 0.13 / 7.48 | Vignette +50 | 0.13 / 4.31 |
+| Vignette −25 | 0.07 / 3.56 | Vignette +25 | 0.08 / 1.31 |
+| −50 Midpoint 0 | 0.47 / 15.79 | −50 Midpoint 100 | 0.15 / 0.57 |
+| −50 Feather 0 | 0.57 / 5.66 | −50 Feather 100 | 0.16 / 4.59 |
+| −50 Roundness +100 | 0.16 / 7.62 | −50 Roundness −100 | 0.16 / 0.64 |
+| −50 Style 2 | 0.13 / 7.48 | −50 Style 3 | 0.32 / 8.40 |
+| −50 Highlights 50 | 0.10 / 6.72 | −50 Highlights 100 | 0.09 / 6.26 |
+| Sharpen 25 | 0.029 / 0.34 | Sharpen 50 | 0.063 / 0.43 |
+| Sharpen 100 | 0.114 / 0.49 | 50 Radius 3.0 | 0.098 / 0.52 |
+| 50 Detail 100 | 0.172 / 0.49 | 50 Masking 50 | 0.056 / 0.41 |
+| Luminance NR 25 | 0.16 / 0.51 | Color NR 25 | 0.52 / 1.60 |
+| Luminance NR 50 | 0.21 / 0.67 | Color NR 50 | 0.52 / 1.61 |
+| Luminance NR 100 | 0.30 / 1.02 | Color NR 100 | 0.52 / 1.61 |
+| Dehaze −100 | 0.83 / 23.36 | Dehaze +100 | 2.22 / 13.34 |
+| Dehaze −50 | 0.62 / 10.56 | Dehaze +50 | 0.82 / 5.50 |
+| Dehaze −25 | 0.39 / 4.97 | Dehaze +25 | 0.33 / 2.57 |
+
+- Other frame sizes:
+  - Vignette −50: 0.13 at 768 and 3072 px.
+  - Sharpen 50: 0.10 / 0.63 at 768 px and 0.036 / 0.24 at 3072 px.
+  - Dehaze +50: 0.86 / 5.43 at 768 px and 0.86 / 5.54 at 3072 px.
+- Grain is compared by statistics, since its pattern isn't reproduced (sd and lag-1, ours /
+  Lightroom):
+
+  | Export | sd | lag-1 |
+  |---|---|---|
+  | Amount 10–100 | within 0.0001 | −0.065 / −0.060 |
+  | Size 10 | 0.0839 / 0.0838 | −0.134 / −0.134 |
+  | Size 50 | 0.0616 / 0.0616 | +0.056 / +0.052 |
+  | Size 100 | 0.0481 / 0.0481 | +0.208 / +0.216 |
+  | Roughness 0 | 0.1272 / 0.1274 | −0.164 / −0.160 |
+  | Roughness 100 | 0.0726 / 0.0726 | +0.261 / +0.252 |
+  | 768 px | 0.0840 / 0.0863 | −0.136 / −0.148 |
+  | 3072 px | 0.0516 / 0.0513 | +0.169 / +0.185 |
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Vignette 0 is the identity; the center is kept; corners order by amount; grays stay gray | `test_vignette_darkens_or_lightens_the_corners_and_keeps_the_center` | PASS |
+| 2 | Midpoint grows or shrinks the area, Feather 0 is steeper, +100 is round in pixels, −100 is a border band | `test_vignette_shape_follows_midpoint_feather_and_roundness` | PASS |
+| 3 | Highlight Priority spares 0.95 more than Paint Overlay; the highlights slider protects more; range and style checks | `test_vignette_highlight_priority_spares_highlights_more_than_paint_overlay` | PASS |
+| 4 | Sharpening overshoots mostly on the bright side, keeps flats, Radius 3 widens it; range check | `test_sharpening_overshoots_edges_mostly_on_the_bright_side_and_keeps_flats` | PASS |
+| 5 | Sharpening grows with amount and is fixed in pixels | `test_sharpening_grows_with_amount_and_is_fixed_in_pixels` | PASS |
+| 6 | Luminance NR smooths more at 25 < 50 < 100 and keeps edges | `test_luminance_noise_reduction_smooths_noise_monotonically_and_keeps_edges` | PASS |
+| 7 | Color NR removes chroma noise, not luma noise; range check | `test_color_noise_reduction_removes_chroma_noise_but_not_luma_noise` | PASS |
+| 8 | Grain is monochrome, seeded, sd 0.0736 at Grain 50 on 1536 px, doubling at 100 | `test_lightroom_grain_is_monochrome_deterministic_and_scales_with_amount` | PASS |
+| 9 | Size and roughness set the texture; small frames get stronger grain | `test_lightroom_grain_size_roughness_and_frame` | PASS |
+| 10 | Dehaze 0 is the identity; + darkens and saturates, − lifts and desaturates; grays stay gray | `test_dehaze_darkens_and_saturates_or_lifts_and_desaturates` | PASS |
+| 11 | `apply_settings` runs the passes a preset names, deterministically per seed | `test_apply_settings_runs_the_spatial_passes_named_in_a_preset` | PASS |
+| 12 | The CLI applies a preset's passes to a TIFF and rejects bad input | `test_finish_cli_applies_a_presets_spatial_passes` | PASS |
+| 13 | Against Lightroom for all the exports above (private) | `tests/private/test_finish_vs_lightroom.py` (6) | PASS |
+
+- RED `c9a62e4`: the tests in `tests/test_finish.py` fail at collection with
+  `ModuleNotFoundError: No module named 'colorlab.finish'`; the other 486 public tests pass.
+- GREEN: `e6a9e8a`: `tests/test_finish.py` 12 pass; public suite 498 pass at 97.96% coverage; private
+  suite 29 pass
+- One threshold changed between RED and GREEN. The RED test asked for a Size 100 lag-1 above 0.3.
+  Lightroom's own export is 0.216, so the test now asks for more than 0.15.
+- Known gaps:
+  - Dehaze +100 is 2.22: the bright saturated patches and the gradients near edges.
+  - Color NR is 0.52: Lightroom's chroma smoothing leaves more lag-1 correlation (about 0.4) than
+    a Gaussian.
+  - Vignette Feather 0 is 0.57 and Midpoint 0 is 0.47: the edge profile is the default one,
+    stretched.
+  - Sharpening Masking isn't modelled, and Detail 100's ringing is only approximated (0.17).
+  - Grain reproduces Lightroom's statistics, not its pattern.
+  - Style 2 is checked only on grays, where it equals style 1.
+  - Not wired into `render`. The passes run on the encoded image after the look; Lightroom runs
+    most of them before the profile.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
   (truncated-TIFF `struct.error`, non-UTF-8 XMP packets, empty-sample curves).
 - Pipeline: stage strengths (`K_*`) are first guesses until single-slider calibration. Not yet modelled:
-  Dehaze (local, task 6b; Highlights/Shadows, Clarity and Texture are in `colorlab.local_contrast`), camera calibration sliders (3 presets use them),
+  the spatial passes in `render` (task 6b's passes run on the encoded image after the look: `colorlab.local_contrast`, `colorlab.finish`), camera calibration sliders (3 presets use them),
   raw-only Kelvin white balance, and Adobe built-in looks (1 preset).
 - RGBTable primaries/gamma enum values 2–4 (ProPhoto, P3, Rec.2020, gamma 1.8) follow the
   DNG SDK ordering and haven't been checked against a real sample yet.
