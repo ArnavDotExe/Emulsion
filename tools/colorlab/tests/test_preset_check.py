@@ -95,3 +95,25 @@ def test_cli_writes_the_kit_and_a_json_report(tmp_path, capsys):
     assert "Plain" in printed and "median" in printed
     assert main(["compare", str(exports), str(tmp_path / "nope"), str(presets)]) == 1
     assert main(["kit", str(presets), str(kit), "--size", "64by96"]) == 1
+
+
+def test_compare_saves_each_row_as_it_goes_and_resumes_from_the_json(tmp_path, capsys):
+    presets, kit, exports = make_presets(tmp_path / "presets"), tmp_path / "kit", tmp_path / "exports"
+    write_preset_kit(presets, kit, size=SIZE)
+    by_name = {p.name: p for p in load_preset_dir(presets)}
+    for name in ("Grainy", "Plain"):
+        chart = read_rgb_tiff(kit / "images" / f"{FULL_PREFIX}{name}.tif")
+        _export(kit, exports, f"{FULL_PREFIX}{name}", render_preset(by_name[name], chart))
+    seen = []
+    report = compare_exports(exports, kit, presets, done={"Grainy"}, on_row=seen.append)
+    assert [r["name"] for r in report.rows] == ["Plain"] and seen == report.rows  # Grainy was already done
+    out = tmp_path / "report.json"
+    out.write_text(json.dumps({"rows": [{"name": "Plain", "after": 123.0}], "missing": [], "unchanged": []}),
+                   encoding="utf-8")
+    assert main(["compare", str(exports), str(kit), str(presets), "--json", str(out)]) == 0
+    rows = {r["name"]: r for r in json.loads(out.read_text(encoding="utf-8"))["rows"]}
+    assert rows["Plain"]["after"] == 123.0 and rows["Grainy"]["after"] < 0.02  # kept, and the rest added
+    assert "resuming" in capsys.readouterr().out
+    assert main(["compare", str(exports), str(kit), str(presets), "--json", str(out), "--fresh"]) == 0
+    rows = {r["name"]: r for r in json.loads(out.read_text(encoding="utf-8"))["rows"]}
+    assert rows["Plain"]["after"] < 0.02
