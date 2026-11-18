@@ -80,7 +80,8 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `metrics` | sRGB → Lab, CIEDE2000 |
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
-saturation, vibrance + HSL (or B&W), then tone, parametric, point curves, profile table and color grading.
+Whites/Blacks (with exposure), saturation, vibrance + HSL (or B&W), then contrast, parametric, point
+curves, profile table and color grading.
 Saturation, vibrance and HSL work on scene-linear values: the exposure shoulder's stretch, applied
 hue-preservingly (min and max mapped, middle kept in place; `pipeline._to_scene`). White
 balance and exposure are gains on that same scene scale: per Bradford cone for white balance, so
@@ -111,12 +112,19 @@ Lightroom quirks:
 
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
-- Accuracy against the user's 44 private presets: median ΔE2000 0.87, mean 1.34. Tone curves
-  (contrast, whites/blacks, parametric, master curve) are applied hue-preservingly
-  (`pipeline.rgb_tone`); per-channel curves stay per channel. White balance is measured stops per
-  Bradford cone, as gains on the scene scale (`pipeline.white_balance_stops`); exposure is the same
-  gain on all channels. Both keep the hue of linear values. Fitted against the ProPhoto exports,
-  Bradford beat CAT02, CAT16, HPE and XYZ.
+- Accuracy against the user's 44 private presets: median ΔE2000 0.75, mean 1.12.
+- Tone is split the way Lightroom splits it (`pipeline.whites_blacks`, `pipeline.curve_tone`):
+  - Whites/Blacks run first, with exposure. Whites + uses linear min/max, Whites − and Blacks +
+    one scene-scale gain at the (R + 2G + B)/4 key, and Blacks − each channel on the scene scale.
+  - Contrast, parametric and master curve use linear min/max before process version 15.4. From
+    15.4 they use encoded min/max pulled toward the middle channel (`rgb_tone(pull=True)`), a
+    stand-in for Lightroom's unreconstructed luminance-mode stage.
+  - Per-channel curves stay per channel.
+  - Tone bakes are now 0.05 (worst Blacks −100 0.39). The 9 presets that got worse all have custom
+    master curves; see the TDD doc.
+- White balance is measured stops per Bradford cone, as gains on the scene scale
+  (`pipeline.white_balance_stops`); exposure is the same gain on all channels. Both keep the hue of
+  linear values. Fitted against the ProPhoto exports, Bradford beat CAT02, CAT16, HPE and XYZ.
 - Color grading is reconstructed, not fitted (`pipeline.grade_curves`): three per-channel 1-D curves
   on linear working values, matching all 24 grading bakes to 0.007 ΔE. Since they depend only on
   the look's settings, the app bakes them into the look's 3D LUT, at no per-frame cost. Split-toning
@@ -141,7 +149,7 @@ Lightroom quirks:
 - ProPhoto exports of all 147 bakes are in `out/cal-exports-prophoto` (16-bit, gamma 1.8). They
   show that Lightroom's sRGB export is a plain clip of its ProPhoto result (0.006 ΔE), with no
   gamut mapping, and they keep out-of-sRGB colors for checking the model.
-- All 147 calibration bakes are collected (mean 0.33 ΔE); no re-bake is pending.
+- All 147 calibration bakes are collected (mean 0.18 ΔE); no re-bake is pending.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
     deterministic (repeat exports are bit-identical).
@@ -159,8 +167,8 @@ Lightroom quirks:
 - Biggest single-slider gaps:
   - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
   - Vibrance −100 1.5 and Saturation +100 0.6.
-  - Tone extremes are now the worst: Blacks +100 2.6, Whites −100 2.3, Parametric Darks −100 1.5.
-    Exposure ±2 is 0.8–0.9.
+  - Exposure ±2 is 0.8–0.9. Tone extremes are fixed: Blacks −100 0.39 and Whites −100 0.29 are the
+    worst, from 2.6 and 2.3.
   - HSL is at most 0.67 (Lum Green −100), and B&W at most 0.46 (Mix Green +100).
   - `calibration._WB_GRAY_WEIGHT` sets the white-balance fit's balance of colors against grays.
 - darktable (GPL-3.0-or-later) was studied for 6b and the camera: `docs/study/darktable.md` ranks

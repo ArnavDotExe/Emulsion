@@ -707,6 +707,70 @@ profile data (CC BY-SA 4.0) is used.
   ported. Grain is applied to the final positive, not to a simulated negative before printing.
   The defaults are spektrafilm's generic ones, not tuned to any look.
 
+## Lightroom's tone methods: Whites/Blacks with exposure, curves by process version
+
+Journey: as a photographer using an Emulsion look made from a Lightroom preset, I want strong
+Whites, Blacks and curve settings to tint saturated colors the way Lightroom does, so a look's
+deep shadows and bright highlights don't drift in hue.
+
+Neutral grays were already exact (0.01 ΔE) on every tone bake. The errors came only from how
+the gray curves reach colors. Each slider family was tried on the encoded, linear and scene
+scales, by hue-preserving min/max, per channel and as one ratio for all channels. What matched
+the bakes (all clean-room code, our own names):
+
+- `whites_blacks` runs first in `ORDER`, where Lightroom applies them with exposure, before
+  saturation and HSL:
+  - Whites +: the curve on each color's linear min and max.
+  - Whites − and Blacks +: one gain for all channels on the scene scale, the curve's ratio at
+    the brightness key (R + 2G + B)/4.
+  - Blacks −: per channel on the scene scale, so a saturated color's dark channels reach black
+    first.
+- `curve_tone` handles Contrast, the parametric and the master point curve:
+  - Before PV 15.4 the curve maps each color's linear min and max.
+  - From 15.4 Lightroom uses a luminance-mode stage that isn't reconstructed. Encoded min/max
+    pulled toward the middle channel (`rgb_tone(pull=True)`) is the measured stand-in. On the
+    24 PV 15.4 presets it scored mean 1.26, against 1.34 for plain encoded min/max and 1.44 for
+    linear.
+
+| # | What is guaranteed | Test (`tests/test_pipeline.py`) | Result |
+|---|---|---|---|
+| 1 | Before 15.4, curves and Whites + keep the hue of linear values; grays are the same for every version | `test_tone_curves_keep_the_hue_of_linear_values_before_15_4` | PASS |
+| 2 | From 15.4, curves match an independent solve of the pulled min/max; same for later versions | `test_from_15_4_curves_pull_min_and_max_toward_the_middle_on_encoded_values` | PASS |
+| 3 | The pull changes nothing for an identity curve, and grays get the curve exactly | `test_pulled_rgb_tone_with_an_identity_curve_changes_nothing` | PASS |
+| 4 | Whites − and Blacks + scale all channels by one scene ratio | `test_whites_minus_and_blacks_plus_scale_all_channels_by_one_scene_ratio` | PASS |
+| 5 | Blacks − maps each channel like a gray on the scene scale | `test_blacks_minus_maps_each_channel_like_a_gray_on_the_scene_scale` | PASS |
+| 6 | Grays follow the measured curves; range checks | `test_whites_and_blacks_keep_grays_on_lightrooms_measured_curves` | PASS |
+| 7 | Whites/Blacks run first, before saturation | `test_render_applies_whites_and_blacks_in_the_exposure_stage_before_saturation`, `test_stages_run_in_lightrooms_order` | PASS |
+| 8 | Six Lightroom bakes (Whites ±100, Blacks ±100, Contrast +100, Parametric Darks −100) at four saturated colors, within 0.015 | `test_render_tone_sliders_match_lightroom_on_saturated_colors` | PASS |
+| 9 | Local: Whites/Blacks bakes max < 0.45, mean < 0.16; Contrast/parametric/curve bakes max < 0.30, mean < 0.12; presets median ≤ 0.80, mean ≤ 1.18 | `tests/private/test_tone_vs_bakes.py`, `tests/private/test_pipeline_vs_lightroom.py` | PASS |
+
+- RED `b2e06a6`:
+  - `test_pipeline.py` fails to import `whites_blacks`.
+  - The local tests fail at runtime: Blacks +100 2.61 > 0.45, Parametric Darks −100 1.54 > 0.30,
+    presets median 0.865 > 0.80.
+- GREEN `587203e`:
+  - 476 passed (461 public), coverage 98% (`pipeline.py` 99%).
+  - Two tests were fixed with the implementation: the old `ORDER` test now lists `whites_blacks`
+    first, and the before-saturation test renders in the working space.
+- Results:
+  - 147 bakes: 0.331 → 0.183. Tone bakes mean 0.048.
+  - Blacks +100: 2.61 → 0.20. Whites −100: 2.31 → 0.29. Parametric Darks −100: 1.54 → 0.01.
+    Curve Master S: 0.64 → 0.01.
+  - The worst tone bake is now Blacks −100 at 0.39.
+  - Presets: median 0.865 → 0.750, mean 1.335 → 1.123. 25 got better and 9 got worse.
+  - By process version (mean): PV 11 (15 presets) 0.55 → 0.58, PV 15.4 (24) 1.68 → 1.26
+    (median 1.06 → 0.67), PV 6.7 (5) 2.02 → 2.08.
+- Known gaps:
+  - Lightroom's 15.4 luminance-mode curve stage isn't reconstructed. Its first half (a per-channel
+    lookup, a 0.30/0.59/0.11 luma delta added to every channel, and scaling back into gamut) is
+    understood, but how it converts values isn't.
+  - All 9 presets that got worse have a custom master point curve, their own or a look's. The
+    worst got worse by 0.68, a PV 6.7 preset with a heavy curve. On three PV 11 ones, the pulled
+    method fits better than linear (for example 0.65 against 0.88), although the single-curve
+    bakes favour linear (0.01). So real presets' curves seem to interact with something the
+    single-slider bakes don't isolate. That's open.
+  - Whites − and Blacks ± leave 0.1–0.4 on the extremes.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
