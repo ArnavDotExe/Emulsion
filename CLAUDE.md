@@ -76,6 +76,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `calibration` | 147 single-slider calibration presets; `response` measures shapes from bakes, `fit` fits `K_SCENE`, the one remaining strength |
 | `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `collect` checks and copies the exports |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
+| `film` | Halation (scatter + bounces, scene-anchored highlight boost) and particle grain, sized in µm on the film; ported from spektrafilm and darktable (credited in the header); `apply` CLI for TIFFs |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
@@ -164,6 +165,12 @@ Lightroom quirks:
   - `calibration._WB_GRAY_WEIGHT` sets the white-balance fit's balance of colors against grays.
 - darktable (GPL-3.0-or-later) was studied for 6b and the camera: `docs/study/darktable.md` ranks
   reuse candidates (spektrafilm halation and grain, local Laplacian, dark channel + guided filter).
+- spektrafilm halation and grain are ported (`colorlab.film`, 780e2d5):
+  - Halation runs on scene-linear light before the look; grain runs on the final image as
+    positive-film density.
+  - Sizes are µm on the film (`pixel_size_um`, 36 mm for 135), so previews and captures match and
+    the format sets grain size.
+  - Not ported: sublayer grain, dye clouds, micro-structure, spektrafilm's spectral color and profiles.
 - Then:
   - 6b: spatial effects (grain, vignette, highlights/shadows, clarity, texture, dehaze, sharpening,
     noise reduction). The worst presets are dominated by these.

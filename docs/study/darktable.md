@@ -68,7 +68,7 @@ What this means for Emulsion:
 ## Candidates to reuse, ranked
 
 1. **spektrafilm halation + scatter and the physical grain**: no Lightroom equivalent, central
-   to a film camera, and small (blurs plus a particle sampler).
+   to a film camera, and small (blurs plus a particle sampler). **Done:** `colorlab.film`.
 2. **Local Laplacian** (`common/locallaplacian.c`) as the base for Clarity and Texture, fitted to
    our spatial exports.
 3. **Dark channel + guided filter** (`iop/hazeremoval.c`, `common/guided_filter.c`) for Dehaze.

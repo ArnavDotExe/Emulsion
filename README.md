@@ -46,6 +46,12 @@ pytest --cov
 
 Python 3.11 or newer. Coverage must stay at or above 80%.
 
+## Credits
+
+Film halation and grain (`tools/colorlab`, `colorlab.film`) are ported from
+[spektrafilm](https://github.com/andreavolpato/spektrafilm) by Andrea Volpato (GPL-3.0) and
+from [darktable](https://www.darktable.org/)'s port of it (GPL-3.0-or-later).
+
 ## License
 
 [GPL-3.0-or-later](LICENSE). Fork it, improve it, and keep it open.

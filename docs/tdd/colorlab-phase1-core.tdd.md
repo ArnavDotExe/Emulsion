@@ -658,6 +658,55 @@ same settings as the 1536×1024 kit.
 - GREEN: 32 spatial tests pass; full suite 355 passed, 98% coverage.
 - The kit is built at `out/spatial-scale-kit`: 22 images, 421 MB.
 
+## Film halation and grain, sized on the film (`colorlab.film`)
+
+Journey: as a photographer using the Emulsion camera, I want halation around lights and film
+grain that look the same in the preview and in the full-size capture, and that depend on the
+film format rather than on the sensor's pixel count.
+
+Ported from spektrafilm (Andrea Volpato, GPL-3.0: `model/diffusion.py`, `model/grain.py`, the
+default parameters in `runtime/params_schema.py`) and darktable's port of it
+(`src/common/spektra_core.c`, GPL-3.0-or-later), credited in the module header. No spektrafilm
+profile data (CC BY-SA 4.0) is used.
+
+- `halation` on scene-linear light, before the look: an optional highlight boost, then
+  energy-preserving emulsion scatter (Gaussian core plus an exponential tail drawn as three
+  Gaussians), then halation: `strength` (R 0.05, G 0.015, B 0) of the light added back as three
+  bounces of width 65 µm × √k, weighted 4/7, 2/7, 1/7, renormalized so flat areas keep their level.
+- `boost_highlights` follows darktable's version, anchored to mid-gray × 2^protect rather than
+  to the frame's brightest pixel (spektrafilm's), so a pixel's boost never depends on the rest
+  of the frame.
+- `grain` on the finished image, as a positive transparency: density `-log10(linear)` is made
+  of grains. spektrafilm draws a Poisson count of grains and then a binomial of it; that is the
+  same as one Poisson draw, so the port draws that. Mean density is kept and the variance is
+  `(D + Dmin) × (Dtotal / n) × (1 − uniformity × p)`. Clear highlights and black shadows are
+  smooth; midtones are grainiest.
+- All sizes are micrometres on the film; `pixel_size_um` = frame long side / pixels (36 mm
+  for 135). Blurs clamp at the edges, as a GPU texture does.
+- `python -m colorlab.film apply in.tif out.tif` previews both on an sRGB TIFF.
+
+| # | What is guaranteed | Test (`tests/test_film.py`) | Result |
+|---|---|---|---|
+| 1 | Pixel size from format and frame | `test_pixel_size_is_the_frames_long_side_over_its_pixels` | PASS |
+| 2 | Blurs keep light and flat areas; Gaussian width; exponential PSF's E[r²] = 6L² and encircled energy | `test_gaussian_blur_…`, `test_exponential_blur_approximates_an_exponential_psf` | PASS |
+| 3 | Halation keeps flat areas and total light; red > green, no blue | `test_halation_keeps_flat_areas_and_with_defaults_is_red_then_green_never_blue` | PASS |
+| 4 | Halo energy = strength × amount; bounce widths √k with weights 4/7, 2/7, 1/7 | `test_halation_adds_strength_times_the_light_as_bounces_of_widening_gaussians` | PASS |
+| 5 | Same halo (within 3%) at 5 µm and 10 µm pixels | `test_halation_is_sized_on_the_film_so_every_resolution_gets_the_same_halo` | PASS |
+| 6 | Boost: identity below the protected range, 2^boost at the top, C¹ tangent, independent of the frame | `test_highlight_boost_is_anchored_to_scene_exposure_not_to_the_frame`, `test_halation_feeds_boosted_highlights_into_the_halo` | PASS |
+| 7 | Grain keeps the mean density and has the particle model's variance (D 0 to 2.2) | `test_grain_keeps_the_mean_density_and_has_the_particle_models_variance` | PASS |
+| 8 | 2 × 2-binned grain at 5 µm matches grain at 10 µm | `test_grain_is_sized_on_the_film_so_averaged_fine_grain_matches_coarse_pixels` | PASS |
+| 9 | Variance ∝ particle area; scan blur scales it by Σw² | `test_bigger_particles_give_stronger_grain_and_the_scan_blur_softens_it` | PASS |
+| 10 | Seeded, deterministic, channels uncorrelated | `test_grain_is_deterministic_per_seed_and_independent_per_channel` | PASS |
+| 11 | Grain strongest in midtones; image and CLI paths | `test_grain_on_a_positive_…`, `test_apply_to_image_…`, `test_cli_…` | PASS |
+
+- RED `32d7f81`: `ModuleNotFoundError: No module named 'colorlab.film'`.
+- GREEN `780e2d5`: 21 film tests pass; full suite 460 passed (447 public), coverage 98% (`film.py` 100%).
+- A synthetic 3000 × 2000 night scene renders in 41 s (reference speed; the app uses shaders), with
+  means kept (linear 0.1887 → 0.1889).
+- Known gaps: spektrafilm's sublayer grain, dye-cloud blur and micro-structure clumping aren't
+  ported. Grain is applied to the final positive, not to a simulated negative before printing.
+  The defaults are spektrafilm's generic ones, not tuned to any look.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
