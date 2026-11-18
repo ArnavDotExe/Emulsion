@@ -299,13 +299,47 @@ def highlights_shadows(encoded: np.ndarray, highlights: float = 0.0, shadows: fl
     return np.clip(new[..., None] + (img - old[..., None]) * scale[..., None], 0.0, 1.0)
 
 
+#: Dehaze's dark channel half (positive amounts): the haze map mixes the darkest channel with
+#: luma, takes its minimum over width/128 px and refines it by a width/16 px guided filter.
+DEHAZE_MIX = 0.65
+DEHAZE_EPS = 0.01
+DEHAZE_AIR = 1.05  # the haze's (encoded) level
+DEHAZE_MIN_TRANSMISSION = 0.05
+_DEHAZE_AMOUNTS = (0.0, 25.0, 50.0, 100.0)
+_DEHAZE_STRENGTH = (0.0, 0.2, 0.4, 0.775)  # how much of the haze map is removed
+_DEHAZE_SHARE = (0.0, 0.2, 0.5, 0.8)  # the dark channel result's share against the tone table's
+
+
+def dehaze_radii(width: int) -> tuple[int, int]:
+    """The min-filter and guided-filter radii (px) of Dehaze's haze map for a frame ``width`` px wide."""
+    return max(1, round(width / 128)), max(1, round(width / 16))
+
+
+def _min_filter(x: np.ndarray, radius: int) -> np.ndarray:
+    pad = np.pad(x, radius, mode="edge")
+    rows = np.lib.stride_tricks.sliding_window_view(pad, 2 * radius + 1, axis=0).min(-1)
+    return np.lib.stride_tricks.sliding_window_view(rows, 2 * radius + 1, axis=1).min(-1)
+
+
+def _clear_haze(img: np.ndarray, amount: float) -> np.ndarray:
+    """The dark channel prior (He, Sun and Tang, 2009) on encoded values: ``(I - A) / t + A``."""
+    luma = img @ SRGB_LUMA
+    small, large = dehaze_radii(img.shape[1])
+    haze = _min_filter(DEHAZE_MIX * img.min(axis=-1) + (1 - DEHAZE_MIX) * luma, small)
+    haze = guided_filter(luma, haze, large, DEHAZE_EPS)
+    strength = float(np.interp(amount, _DEHAZE_AMOUNTS, _DEHAZE_STRENGTH))
+    t = np.maximum(1.0 - strength * haze / DEHAZE_AIR, DEHAZE_MIN_TRANSMISSION)[..., None]
+    return np.clip((img - DEHAZE_AIR) / t + DEHAZE_AIR, 0.0, 1.0)
+
+
 def dehaze(encoded: np.ndarray, amount: float) -> np.ndarray:
     """Lightroom-style Dehaze (-100..100) on an sRGB-encoded H x W x 3 image.
 
-    Luminance moves by a local tone table, like Highlights/Shadows. Each channel's linear
-    difference from luminance is then scaled by a measured gain over the new tone: about 0.5-0.7
-    of a dark tone's shrink at +100, so colors gain saturation as the image darkens, and toward
-    gray at -100.
+    Luminance moves by a local tone table, like Highlights/Shadows, and each channel's linear
+    difference from luminance is scaled by a measured gain over the new tone, so colors gain
+    saturation as the image darkens (and lose it toward -100). Positive amounts then mix in a
+    dark channel result, ``(I - A) / t`` with a smooth transmission map: it keeps a saturated
+    color's main channel and follows Lightroom's long gradients inside flat areas.
     """
     amount = _check("dehaze", amount, -100.0, 100.0)
     img = np.clip(np.asarray(encoded, dtype=np.float64), 0.0, 1.0)
@@ -321,7 +355,11 @@ def dehaze(encoded: np.ndarray, amount: float) -> np.ndarray:
     curve = 1.0 + _amount_table({a: g - 1.0 for a, g in _dehaze_gains().items()}, amount)
     gain = np.interp(new_y, np.linspace(0.0, 1.0, len(curve)), curve)
     out = (new_y ** LUMA_GAMMA)[..., None] + (lin - lum[..., None]) * gain[..., None]
-    return np.clip(encode(np.clip(out, 0.0, 1.0), Transfer.SRGB), 0.0, 1.0)
+    out = np.clip(encode(np.clip(out, 0.0, 1.0), Transfer.SRGB), 0.0, 1.0)
+    if amount > 0:
+        share = float(np.interp(amount, _DEHAZE_AMOUNTS, _DEHAZE_SHARE))
+        out = (1 - share) * out + share * _clear_haze(img, amount)
+    return out
 
 
 def apply_to_image(encoded: np.ndarray, clarity_amount: float = 0.0, texture_amount: float = 0.0,
