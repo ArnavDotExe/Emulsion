@@ -78,8 +78,8 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `film` | Halation (scatter + bounces, scene-anchored highlight boost) and particle grain, sized in µm on the film; ported from spektrafilm and darktable (credited in the header); `apply` CLI for TIFFs |
 | `local_contrast` | Highlights/Shadows (a tone table over the pixel and a Gaussian base of width/32, per amount, in `data/local_tone.json`), Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr) and Dehaze (a monotone local tone table and a linear-light color gain, mixed for positive amounts with a dark channel prior), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
-| `finish` | Vignette (measured mask profile plus a value × weight table per amount; midpoint, feather, roundness, styles, highlights), sharpening (clamped unsharp mask on luma, fixed in pixels), noise reduction (guided filter on Y, Gaussian on CbCr), Lightroom-statistic grain (seeded `G_s − b G_2s` noise, frame-relative size), all in `data/finish.json`; `apply_settings` runs every spatial pass a preset names in Lightroom's order; `apply` CLI |
-| `preset_check` | Whole-preset check: `kit` writes full preset copies (geometry neutralized) on the scene chart as embedded sidecars; `compare` scores Lightroom's exports against `finish.render_preset` (global, spatial passes after or before the look, blurred, and on Lightroom's baked LUTs) |
+| `finish` | Vignette (measured mask profile plus a value × weight table per amount; midpoint, feather, roundness, styles, highlights), sharpening (clamped unsharp mask on luma, fixed in pixels), noise reduction (guided filter on Y, Gaussian on CbCr), Lightroom-statistic grain (seeded `G_s − b G_2s` noise, frame-relative size), all in `data/finish.json`; `apply_settings` runs every spatial pass a preset names in Lightroom's order; `render_preset` runs local passes and vignette before the look, grain after, with the look profile's Highlights/Shadows folded in (`spatial_settings`); `apply` CLI |
+| `preset_check` | Whole-preset check: `kit` writes full preset copies (geometry neutralized) on the scene chart as embedded sidecars; `compare` scores Lightroom's exports against `finish.render_preset` (global, spatial passes after or before the look, blurred, and on Lightroom's baked LUTs), saving its JSON per preset and resuming from it |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
@@ -204,13 +204,19 @@ Lightroom quirks:
     - Dehaze: −100 0.83 (23.4), ±25–50 0.31–0.71, +100 1.60 (13.3). Positive amounts mix in a dark
       channel prior with a smooth haze map (`dehaze_radii`: width/128 min filter, width/16 guided
       filter), which keeps a saturated color's main channel as Lightroom does (cbc4577).
-  - Whole-preset check (`colorlab.preset_check`, 7f69705): `out/preset-kit` holds the 44 presets in
-    full on the scene chart, waiting for the user's Lightroom export. Then run
-    `python -m colorlab.preset_check compare <exports> ../../out/preset-kit ../../presets/private --luts ../../looks/private/lightroom` (from `tools/colorlab`).
-    That decides whether the local passes go before or after the look.
+  - Whole-preset check (`colorlab.preset_check`), on the user's export of `out/preset-kit`
+    (`out/preset-kit/exports`, report `out/preset-compare-v2.json`), blurred σ 2 px: median 0.85 /
+    mean 1.00 with our look, 0.63 / 0.82 on Lightroom's baked LUTs. `render_preset` runs the
+    local passes and then the vignette before the look and the grain after it (local first wins on
+    38 presets and loses on none). `finish.spatial_settings` folds a look profile's own
+    Highlights/Shadows (at the look's amount) into the local pass. Lightroom ignores a look's
+    Sharpness. `compare` saves its JSON after every preset and resumes from it.
+    Gaps: one preset at 4.88 is a global-model gap (1.62 on its LUT); strong Highlights +
+    Clarity + Dehaze presets are 1.5–2.5. Looks whose profile carries Highlights/Shadows have
+    baked LUTs that hold a Hald-specific version of that pass.
   - `finish.apply_settings` runs every spatial pass in a preset in Lightroom's order (NR,
     Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, vignette, grain) on the encoded
-    image after the look. `finish.render_preset` runs the look and then the passes.
+    image (`finish.render_preset` orders them around the look as above).
 - Biggest single-slider gaps:
   - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
   - Vibrance −100 1.5 and Saturation +100 0.6.
@@ -227,8 +233,7 @@ Lightroom quirks:
     the format sets grain size.
   - Not ported: sublayer grain, dye clouds, micro-structure, spektrafilm's spectral color and profiles.
 - Then:
-  - 6b's gaps: Color NR (0.52), Dehaze +100 (1.60), and the whole-preset results, which wait
-    for the `out/preset-kit` export.
+  - 6b's gaps: Color NR (0.52), Dehaze +100 (1.60), and the whole-preset gaps above.
   - 7: check against the Fuji DNG presets' embedded Lightroom previews.
   - 8: the `.fsim.json` look format.
   - 9: the CLI.

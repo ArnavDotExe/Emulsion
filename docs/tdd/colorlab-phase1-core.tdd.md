@@ -1340,6 +1340,79 @@ come out as Lightroom renders them. Dehaze +100 was the weakest spatial fit (2.2
   pass
 - Known gap: +100 is still 1.60, mostly the bright saturated patches and the ramp.
 
+## Whole-preset results: pass order and the look profile's local tone (`finish.render_preset`)
+
+Journey: as a photographer, I want a whole preset in Emulsion (global look, local contrast,
+vignette, grain) to look like Lightroom's export of it, not just its global color.
+
+The user exported `out/preset-kit` (44 presets on the 1536 × 1024 scene chart, 16-bit sRGB).
+`preset_check compare` scored them. Scores are mean ΔE2000 after a σ 2 px blur of both images,
+since the grain pattern isn't reproduced.
+
+### What the first run showed
+
+- Running the local passes before the look won on 30 presets and lost on none. The blurred median
+  was 0.97 against 1.52 for after the look.
+- Six presets set no spatial sliders. Four of them still disagreed with Lightroom's own baked LUT:
+  2.70, 2.03, 1.43 and 0.42.
+  - The difference was a near-uniform shift (a 0.8 gray came out at 0.705, against the LUT's 0.78).
+  - Their embedded looks are stubs: the preset names a profile by UUID, and the profile, byte for
+    byte the same as the one we read, carries its own Highlights2012 (−10 to −30) and Shadows2012
+    (0 to +10).
+  - Highlights/Shadows is a neighbourhood pass, so it acts differently on a Hald image than on a
+    photo. Our global pipeline folds a look's global settings in, but this one was never applied
+    as a local pass.
+  - The two matching presets' profiles carry Sharpness 40 and still match the LUT at 0.03, so
+    Lightroom ignores a look's sharpening.
+- Dropping one spatial setting at a time didn't explain the worst presets. Moving the post-crop
+  vignette before the look did: over the 33 presets with grain or a vignette, on Lightroom's LUTs,
+  the mean went from 1.13 to 0.93, and the worst preset from 3.13 to 1.75. Grain before the look
+  was worse (mean 1.18), so it stays last.
+- Our grain matches Lightroom's mean and sd at every level of the levels chart (0.05 to 0.97), so the
+  grain model wasn't the problem.
+
+### The changes
+
+- `finish.spatial_settings(preset)` adds the look profile's Highlights2012 and Shadows2012 at the
+  look's amount, clamped to −100..100 (`LOOK_SPATIAL_SETTINGS`).
+- `render_preset` defaults to `local_first=True` and computes
+  `grain(look(vignette(local passes(image))))`. `local_first=False` keeps everything after the look.
+  `finishing_passes` is split into `vignette_pass` and `grain_pass`.
+- `compare` scores one preset at a time and frees memory in between. It saves `--json` after each
+  preset and resumes from it, and `--fresh` starts over. The first run was stopped by the system
+  for low memory before writing anything.
+
+### Results over the 44 presets (blurred, local passes first)
+
+| | First run median / mean | Now median / mean |
+|---|---|---|
+| Our global look + spatial passes | 0.97 / 1.43 | 0.85 / 1.00 |
+| Lightroom's baked LUT + our spatial passes | 0.91 / 1.18 | 0.63 / 0.82 |
+| Our passes after the look | 1.52 / 1.82 | 1.42 / 1.66 |
+
+- Local first now wins on 38 presets and loses on none.
+- The look-profile presets went from 3.13 / 2.84 / 1.86 / 0.50 to 0.24 / 0.91 / 0.63 / 0.20.
+- Gaps:
+  - The worst preset is 4.88 with our look but 1.62 on Lightroom's LUT, so that gap is in the
+    global model.
+  - The next ones (1.5–2.5) set strong Highlights, Clarity and Dehaze together.
+  - The baked LUTs of looks whose profile carries Highlights/Shadows include a Hald-specific
+    version of that pass, so they aren't clean global looks.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | `compare` saves each row as it is scored, resumes from its JSON, and `--fresh` starts over | `test_compare_saves_each_row_as_it_goes_and_resumes_from_the_json` | PASS |
+| 2 | A look profile's Highlights/Shadows are added at its amount and clamped, its Sharpness is ignored, and the local passes run first by default | `test_render_preset_folds_in_the_look_profiles_highlights_and_shadows_before_the_look` | PASS |
+| 3 | With local passes first the vignette runs before the look and the grain after it | `test_render_preset_runs_the_look_then_the_spatial_passes_in_either_order` | PASS |
+| 4 | Four whole presets match Lightroom's exports, with limits just above the measured values; local first never loses (private) | `tests/private/test_preset_check_vs_lightroom.py` | PASS (4) |
+
+Commits:
+- Resumable compare: RED `a2eabbf` (`compare_exports()` got an unexpected keyword argument
+  `done`), GREEN `cf375ce` (507 pass).
+- Look Highlights/Shadows: RED `39e1d01` (cannot import `spatial_settings`), GREEN `596b1d7`
+  (508 pass, 98%).
+- Vignette before the look: RED `84e12d6`, GREEN `f26d4c9` (508 pass, 98%).
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
