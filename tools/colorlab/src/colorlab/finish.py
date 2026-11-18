@@ -291,24 +291,46 @@ def apply_settings(encoded: np.ndarray, settings: Mapping[str, str], seed: int =
     return finishing_passes(local_passes(encoded, settings), settings, seed)
 
 
-def render_preset(preset: Preset, image: np.ndarray, seed: int = 0, local_first: bool = False,
-                  look: Callable[[np.ndarray], np.ndarray] | None = None) -> np.ndarray:
-    """A whole preset on an sRGB-encoded image: its global look, then its spatial passes.
+#: The spatial settings Lightroom takes from a look profile, added at the look's amount. A look's
+#: Sharpness is ignored (looks with Sharpness 40 export the same as their baked LUT).
+LOOK_SPATIAL_SETTINGS = ("Highlights2012", "Shadows2012")
 
-    ``local_first`` runs the neighbourhood passes before the look instead of after it (the
-    vignette and grain always come last). ``look`` replaces :func:`colorlab.pipeline.render`,
-    for example with Lightroom's own baked LUT of the preset.
+
+def spatial_settings(preset: Preset) -> dict[str, str]:
+    """``preset``'s settings with its look profile's Highlights/Shadows added at the look's amount
+    and clamped to -100..100, as Lightroom applies them."""
+    settings = dict(preset.settings)
+    look = preset.look
+    profile = look.source if look is not None else None
+    if profile is not None:
+        for key in LOOK_SPATIAL_SETTINGS:
+            if profile.has(key):
+                value = preset.number(key) + look.amount * profile.number(key)
+                settings[key] = f"{float(np.clip(value, -100.0, 100.0)):g}"
+    return settings
+
+
+def render_preset(preset: Preset, image: np.ndarray, seed: int = 0, local_first: bool = True,
+                  look: Callable[[np.ndarray], np.ndarray] | None = None) -> np.ndarray:
+    """A whole preset on an sRGB-encoded image: its global look and its spatial passes.
+
+    The neighbourhood passes (with the look profile's Highlights/Shadows folded in, see
+    :func:`spatial_settings`) run before the look by default, which matched Lightroom's exports
+    of 44 presets best; ``local_first=False`` runs them after it. The vignette and grain always
+    come last. ``look`` replaces :func:`colorlab.pipeline.render`, for example with Lightroom's
+    own baked LUT of the preset.
     """
     def default(x: np.ndarray) -> np.ndarray:
         return render(preset, x).astype(np.float64)
 
     look = look or default
+    settings = spatial_settings(preset)
     img = _image(image)
     if local_first:
-        img = _image(look(local_passes(img, preset.settings)))
+        img = _image(look(local_passes(img, settings)))
     else:
-        img = local_passes(_image(look(img)), preset.settings)
-    return finishing_passes(img, preset.settings, seed)
+        img = local_passes(_image(look(img)), settings)
+    return finishing_passes(img, settings, seed)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -57,7 +57,7 @@ def test_compare_scores_each_order_and_finds_missing_and_unchanged_exports(tmp_p
     write_preset_kit(presets, kit, size=SIZE)
     by_name = {p.name: p for p in load_preset_dir(presets)}
     chart = read_rgb_tiff(kit / "images" / f"{FULL_PREFIX}Grainy.tif")
-    _export(kit, exports, f"{FULL_PREFIX}Grainy", render_preset(by_name["Grainy"], chart, seed=5))
+    _export(kit, exports, f"{FULL_PREFIX}Grainy", render_preset(by_name["Grainy"], chart, seed=5, local_first=False))
     report = compare_exports(exports, kit, presets, seed=5)
     assert report.missing == [f"{FULL_PREFIX}Plain"] and report.unchanged == []
     (row,) = report.rows
@@ -76,7 +76,7 @@ def test_compare_runs_the_spatial_passes_on_lightrooms_own_look_when_given_its_l
     chart = read_rgb_tiff(kit / "images" / f"{FULL_PREFIX}Grainy.tif")
     luts.mkdir()
     write_cube(Lut3D.identity(9), luts / "Grainy.cube")  # Lightroom's global look, here the identity
-    _export(kit, exports, f"{FULL_PREFIX}Grainy", render_preset(preset, chart, seed=0, look=lambda x: x))
+    _export(kit, exports, f"{FULL_PREFIX}Grainy", render_preset(preset, chart, seed=0, local_first=False, look=lambda x: x))
     (row,) = compare_exports(exports, kit, presets, lut_dir=luts).rows
     assert row["lut_after"] < 0.02 < row["lut_before"] + 0.02 and row["after"] > row["lut_after"]
 
@@ -86,7 +86,7 @@ def test_cli_writes_the_kit_and_a_json_report(tmp_path, capsys):
     assert main(["kit", str(presets), str(kit), "--size", "64x96"]) == 0
     chart = read_rgb_tiff(kit / "images" / f"{FULL_PREFIX}Plain.tif")
     preset = {p.name: p for p in load_preset_dir(presets)}["Plain"]
-    _export(kit, exports, f"{FULL_PREFIX}Plain", render_preset(preset, chart))
+    _export(kit, exports, f"{FULL_PREFIX}Plain", render_preset(preset, chart, local_first=False))
     out = tmp_path / "report.json"
     assert main(["compare", str(exports), str(kit), str(presets), "--json", str(out)]) == 0
     data = json.loads(out.read_text(encoding="utf-8"))
@@ -103,7 +103,7 @@ def test_compare_saves_each_row_as_it_goes_and_resumes_from_the_json(tmp_path, c
     by_name = {p.name: p for p in load_preset_dir(presets)}
     for name in ("Grainy", "Plain"):
         chart = read_rgb_tiff(kit / "images" / f"{FULL_PREFIX}{name}.tif")
-        _export(kit, exports, f"{FULL_PREFIX}{name}", render_preset(by_name[name], chart))
+        _export(kit, exports, f"{FULL_PREFIX}{name}", render_preset(by_name[name], chart, local_first=False))
     seen = []
     report = compare_exports(exports, kit, presets, done={"Grainy"}, on_row=seen.append)
     assert [r["name"] for r in report.rows] == ["Plain"] and seen == report.rows  # Grainy was already done
