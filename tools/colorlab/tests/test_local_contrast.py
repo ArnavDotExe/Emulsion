@@ -1,4 +1,5 @@
-"""Clarity (a local Laplacian filter) and Texture (a guided filter), shaped like Lightroom's."""
+"""Clarity (midtone-weighted detail around a frame-relative base) and Texture (a guided filter),
+shaped like Lightroom's; plus the local Laplacian filter kept for Highlights/Shadows."""
 import numpy as np
 import pytest
 import tifffile
@@ -8,7 +9,7 @@ from colorlab.local_contrast import (
     TEXTURE_RADIUS,
     apply_to_image,
     clarity,
-    clarity_levels,
+    clarity_sigmas,
     guided_filter,
     local_laplacian,
     main,
@@ -91,8 +92,8 @@ def test_amounts_outside_the_slider_range_are_rejected():
 
 
 def test_clarity_is_relative_to_the_frame_and_texture_is_fixed_in_pixels():
-    assert [clarity_levels(w) for w in (768, 1536, 3072)] == [3, 4, 5]
-    assert clarity_levels(40) == 1
+    assert clarity_sigmas(1536) == (16.0, 1.0)
+    assert clarity_sigmas(768) == (8.0, 0.5) and clarity_sigmas(300)[1] == 0.5
 
     def reach(out, img, width):
         row = np.abs(gray(out) - gray(img))[width // 3]
@@ -123,7 +124,7 @@ def test_positive_clarity_darkens_the_midtones_and_raises_fine_contrast():
     ends = np.zeros((64, 96, 3))
     ends[:, 48:] = 1.0
     np.testing.assert_allclose(gray(clarity(ends, 100))[:, [10, 85]], [[0.0, 1.0]] * 64, atol=0.02)
-    fine = bars(384, 4)
+    fine = bars(1536, 4)[:64]  # 2 px bars on a 1536 px frame, as on the calibration chart
     assert np.std(gray(clarity(fine, 100))) > 1.15 * np.std(gray(fine))
     assert np.std(gray(clarity(fine, -100))) < 0.9 * np.std(gray(fine))
 
