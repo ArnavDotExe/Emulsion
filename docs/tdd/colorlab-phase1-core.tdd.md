@@ -828,6 +828,39 @@ What Lightroom does from process version 15.4, studied from the decompiled tone 
   Whites/Blacks ±100 and the red curve are predicted the same as PV 11 (0.00), so those bakes
   test that assumption.
 
+### The PV 15.4 bakes (2026-11-18)
+
+- The 11 exports came back as ProPhoto RGB (gamma 1.8), not sRGB, so every bake first scored
+  about 8 ΔE, grays included. `bake collect` doesn't read the embedded ICC profile. The raw cubes
+  are kept in `out/cal-luts-pv15-prophoto`; the ones in `out/cal-luts` were converted to sRGB with
+  a plain clip, which is what Lightroom's own sRGB export does (0.006 ΔE on the PV 11 bakes).
+- Our model against Lightroom, mean ΔE2000 on a 17³ grid:
+
+  | Variant | Ours | Our PV 11 model would give |
+  |---|---|---|
+  | Contrast +100 | **0.012** | 0.97 |
+  | Parametric Darks −100 | **0.014** | 1.61 |
+  | Curve Master S | **0.010** | 0.74 |
+  | Curve Red | **0.008** | 0.00 |
+  | Master S, Refine 0 | **0.008** | 3.18 |
+  | Master S, Refine 50 | **0.008** | 1.62 |
+  | Contrast +50, Master S, Refine 0 | **0.011** | 2.97 |
+  | Whites +100 | 1.851 (max 14.2) | same |
+  | Whites −100 | 0.348 | same |
+  | Blacks +100 | 0.287 | same |
+  | Blacks −100 | 0.610 | same |
+
+- The combined pulled curve on sRGB-encoded values and the luminance mode are confirmed to 0.01.
+- Known gap, Whites +100 at 15.4: Lightroom's own PV 11 and PV 15.4 bakes differ by 1.85, and the
+  PV 11 bake matches our model to 0.011. At 15.4 Lightroom lifts the low channel of bright
+  saturated colors toward white: input (0.438, 0, 0.812) gives (0.652, 0.387, 1.0), against our
+  (0.58, 0.001, 1.0). The error averages 3.46 for saturation 0.75–1 with max ≥ 0.8. Neither the
+  pull on linear values (1.71) nor on encoded values (1.96) explains it. The other three tone
+  extremes differ between Lightroom's PV 11 and 15.4 bakes by 0.13–0.32, so they move a little too.
+- Private tests: `test_process_version_15_4_curve_stage_and_luminance_mode_match_lightroom`
+  (7 bakes, max < 0.05) and `test_process_version_15_4_whites_and_blacks_known_gaps`, which pins
+  the gap so it can't silently grow. 17 private tests pass.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

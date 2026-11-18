@@ -154,11 +154,13 @@ Lightroom quirks:
   show that Lightroom's sRGB export is a plain clip of its ProPhoto result (0.006 ΔE), with no
   gamut mapping, and they keep out-of-sRGB colors for checking the model.
 - All 147 PV 11 calibration bakes are collected (mean 0.18 ΔE).
-- The 11 PV 15.4 checks (`Cal PV15 …`: Contrast, Parametric Darks, Whites/Blacks ±100, Master S,
-  Red, Refine 0/50, Contrast +50 with Refine 0) are kitted in `out/cal-pv15-kit` and are waiting
-  for a Lightroom export. Then run
-  `python -m colorlab.bake collect <exports> out/cal-pv15-kit out/cal-luts`. They're the first
-  Lightroom check of PV 15.4.
+- The 11 PV 15.4 bakes (`Cal PV15 …`) are collected. They came back as ProPhoto and were
+  converted to sRGB (raw cubes in `out/cal-luts-pv15-prophoto`; `bake collect` doesn't check the
+  ICC profile, so export sRGB).
+  - The combined curve stage and the luminance mode (Contrast, Parametric, Master S, Red,
+    Refine 0/50) match to 0.01.
+  - Known gap: Whites +100 at 15.4 is 1.85. Lightroom lifts the low channel of bright saturated
+    colors toward white, and PV 11 doesn't. Whites −100 0.35, Blacks +100 0.29, Blacks −100 0.61.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
     deterministic (repeat exports are bit-identical).
