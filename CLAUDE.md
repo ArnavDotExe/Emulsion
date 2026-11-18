@@ -77,7 +77,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `collect` checks and copies the exports |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `film` | Halation (scatter + bounces, scene-anchored highlight boost) and particle grain, sized in µm on the film; ported from spektrafilm and darktable (credited in the header); `apply` CLI for TIFFs |
-| `local_contrast` | Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
+| `local_contrast` | Highlights/Shadows (a tone table over the pixel and a Gaussian base of width/32, per amount, in `data/local_tone.json`), Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
@@ -181,10 +181,16 @@ Lightroom quirks:
     3072 px, because its base follows the frame.
   - Texture: ±100 0.30–0.33/0.70, fixed 16 px.
   - The local Laplacian fitted worse for Clarity (−100 0.85, +100 2.06). It moved the bright side
-    of an edge where Lightroom lifts the dark side, so it's kept only for Highlights/Shadows.
+    of an edge where Lightroom lifts the dark side. It lost for Highlights/Shadows too and is kept
+    only as a tested filter.
   - Gap: positive Clarity's wide one-sided local contrast (about 200 px).
-  - Next in 6b: Highlights/Shadows, Dehaze, Sharpening, NR, vignette, grain; then wire the passes
-    into rendering.
+  - Highlights/Shadows (`local_contrast.highlights_shadows`, bad0f97): a 17 × 9 table of the change of
+    Y^(1/2.2) over the pixel and a width/32 Gaussian base, one per slider at ±25/50/100, kept
+    monotone. Lightroom's change depends on the neighbourhood (gradients a few hundred px long in
+    flat patches) but has no halo at edges. Shadows −100 0.27/4.23, +100 0.66/6.87; Highlights
+    −100 1.02/9.72, +100 0.55/6.14. It holds at 768 and 3072 px. The local Laplacian lost here
+    too (1.1–1.7). Gaps: the color carry, and Highlights + moving bright saturated colors toward white.
+  - Next in 6b: Dehaze, Sharpening, NR, vignette, grain; then wire the passes into rendering.
 - Biggest single-slider gaps:
   - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
   - Vibrance −100 1.5 and Saturation +100 0.6.

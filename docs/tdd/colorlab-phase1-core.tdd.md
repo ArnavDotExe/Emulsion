@@ -957,12 +957,113 @@ Texture, I want the camera to render them the way Lightroom does, at any capture
   - Neither effect is wired into `render` yet: they are image passes, and the app runs them as
     shader passes. Lightroom's order is Texture, then Clarity, around the saturation stage.
 
+## Highlights and Shadows (`colorlab.local_contrast.highlights_shadows`)
+
+Journey: as a photographer using an Emulsion look made from a preset with Highlights or Shadows
+(most presets have both), I want the camera to recover highlights and open shadows the way
+Lightroom does, at any capture size.
+
+### What Lightroom does (measured on `out/spatial-exports` and `out/spatial-scale-exports`)
+
+- It is mostly a luminance change. Carrying Lightroom's own luminance change to the identity
+  export as a linear-light ratio reproduces its export to 0.11 (Shadows +100), 0.07 (−100), 0.36
+  (Highlights +100) and 0.18 (−100). Colors carry differently: even with Lightroom's own
+  luminance, the color patches keep 0.8–2.9.
+- The other end of the range gets a plain curve: at Highlights −100 the 0.03–0.35 flat patches
+  move by a constant −0.001 to −0.046.
+- The targeted tones depend on the neighbourhood. At Highlights −100 the 0.8 flat patch changes
+  from −0.23 at its top to −0.31 at its bottom, next to the 0.95 patch, over 256 px. At Shadows
+  +100 the 0.1 patch changes from +0.27 to +0.17 toward the 0.2 patch below it.
+- No halo: at Shadows +100 the dark side of the 0.35/0.95 edge is lifted +0.088 to +0.092 right
+  up to 2 px from it, and the bright side moves +0.006 throughout.
+- Fine detail keeps more of its contrast: at Highlights −100, 2 px bars keep 0.85 of their
+  contrast and wide bars 0.57. At Shadows +100 the figures are 0.96 and 0.79.
+- Bright saturated colors move toward white at Highlights +100: cyan (0.10, 0.75, 0.80) comes
+  out at (0.54, 0.90, 0.94). This looks like the Whites + behavior at PV 15.4.
+- The neighbourhood follows the frame. Shadows +50 at 768 and 3072 px fits better with a base of
+  width/32 than with a fixed 48 px: 0.351 against 0.361 at 768, and 0.230 against 0.268 at 3072.
+
+### The model
+
+- On `y = Y^(1/2.2)`: `y' = y + T(p, B)`.
+  - `p` is the pixel half blurred by 1 px: `(y + gauss(y, 1)) / 2`. This keeps more contrast in
+    the finest detail.
+  - `B` is a Gaussian base with sigma = width/32.
+  - `T` is a 17 × 9 table (bilinear) for each slider at ±25, ±50 and ±100, linear in amount in
+    between, with 0 at 0.
+  - The tables are fitted by least squares with a second-difference penalty (λ = 1e-4 per
+    pixel). Then each base column is made monotone in `p` with a slope of at least 0.2, so no
+    tones swap order.
+  - They are stored in `src/colorlab/data/local_tone.json`.
+  - With both sliders set, the two changes add.
+- The change is carried in sRGB-encoded values: luminance moves to its new encoded value, and
+  each channel's difference from it is scaled by (new / old)^0.5.
+- In `apply_to_image`, Highlights/Shadows run before Texture and Clarity.
+
+### Tried and rejected
+
+| Variant | Shadows +100 | Highlights −100 |
+|---|---|---|
+| 1-D table on the pixel (ratio carry) | 0.93 | 1.18 |
+| 1-D table on the half-blurred pixel, 33 knots | 0.88 | 0.94 |
+| 2-D, Gaussian base sigma 16 / 48 / 128 / 256 px | 0.66 / 0.54 / 0.62 / 0.71 | 0.77 / 0.75 / 0.87 / 0.97 |
+| 2-D, guided-filter base (r 48–192) | 0.61–0.66 | 0.76–0.89 |
+| Two bases (48 + 192 px) | 0.48 | 0.69 |
+| Local Laplacian tone table (4–8 levels, sigma 0.05–0.3) | 1.12–1.31 | 1.37–1.67 |
+
+- The local Laplacian, the candidate from the darktable study: the remap shifted detail by the
+  table at the reference level and gave edges the full pixel curve, and the residual got the
+  table too. Because it is linear in the table, it was fitted exactly, and still lost to the plain
+  2-D table. Two bases gained less than 0.07, so one base is used.
+- Per-channel curves and the RGB-tone method, pulled or not, scored worse on color than a ratio
+  (Highlights −100 color patches 4.0–4.9 against 2.2). The encoded-values carry with exponent 0.5
+  was the best single choice across both sliders (Highlights +100 0.54 against 0.49 for its own
+  best).
+- One table per direction scaled by a power of the amount (fitted at λ = 1e-3) left 0.28–0.64 at
+  ±50, against 0.16–0.38 with a table per amount.
+- The monotone guard costs 3.91 → 4.26 summed over the 12 exports, mostly Highlights −100
+  (0.83 → 1.02). It is kept because unguarded tables had slopes down to −2 in cells the chart
+  hardly covers, which would invert tones in photos.
+
+### Results (mean ΔE2000 on the 1536 × 1024 scene chart; ours / Lightroom's change from identity)
+
+| Slider | −100 | −50 | −25 | +25 | +50 | +100 |
+|---|---|---|---|---|---|---|
+| Shadows | 0.27 / 4.23 | 0.17 / 2.37 | 0.10 / 1.27 | 0.12 / 1.39 | 0.27 / 2.96 | 0.66 / 6.87 |
+| Highlights | 1.02 / 9.72 | 0.40 / 4.45 | 0.19 / 2.12 | 0.19 / 1.97 | 0.33 / 3.62 | 0.55 / 6.14 |
+
+- Shadows +50 at other sizes: 768 px 0.37 / 3.00, 3072 px 0.25 / 3.05.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Amount 0 is the identity; grays stay gray, alone and combined | `test_zero_amounts_change_nothing_and_grays_stay_gray` | PASS |
+| 2 | Range −100..100 for both sliders | `test_amounts_outside_the_slider_range_are_rejected` | PASS |
+| 3 | Shadows lifts a dark flat more at 25 < 50 < 100, darkens it at −100, leaves 0.95 within 0.015 | `test_shadows_moves_the_darks_and_leaves_the_brights` | PASS |
+| 4 | Highlights lowers a 0.8 flat more at −25 < −50 < −100, raises it at +100, leaves 0.05 within 0.01 | `test_highlights_moves_the_brights_and_leaves_the_darks` | PASS |
+| 5 | No halo: Shadows +100 lifts 3 px and 40 px from an edge alike | `test_the_change_is_edge_preserving` | PASS |
+| 6 | 2 px bars keep more contrast than 64 px bars at Highlights −100 | `test_fine_detail_keeps_more_contrast_than_coarse_detail` | PASS |
+| 7 | The base is width/32 | `test_the_base_follows_the_frame` | PASS |
+| 8 | `apply_to_image` and the CLI take `--highlights` and `--shadows` | `test_apply_to_image_and_cli_take_highlights_and_shadows` | PASS |
+| 9 | Against Lightroom at 1536 px for all 12 exports, and Shadows +50 at 768 and 3072 px (private) | `tests/private/test_local_tone_vs_lightroom.py` (3) | PASS |
+
+- RED `6e08399`: the 8 tests in `tests/test_local_tone.py` fail at collection with `ImportError:
+  cannot import name 'highlights_shadows'`; the other 478 public tests pass.
+- GREEN `bad0f97`: 8/8 new tests; 486 public + 23 private pass; coverage 98% (`local_contrast.py` 99%).
+- Known gaps:
+  - Highlights −100 is 1.02, mostly the color patches and the gradients inside the bright flats.
+  - Color carry: no single rule matched all four directions, and bright saturated colors moving
+    toward white at Highlights + isn't modelled.
+  - The tables come from one chart. Cells far from it (a bright pixel in a very dark
+    neighbourhood) are smooth extrapolation, checked only for monotonicity.
+  - Not wired into `render`. Lightroom applies these before the profile and the look; our pass
+    runs on the encoded image like the other spatial passes.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
   (truncated-TIFF `struct.error`, non-UTF-8 XMP packets, empty-sample curves).
 - Pipeline: stage strengths (`K_*`) are first guesses until single-slider calibration. Not yet modelled:
-  Highlights/Shadows, Dehaze (local, task 6b; Clarity and Texture are in `colorlab.local_contrast`), camera calibration sliders (3 presets use them),
+  Dehaze (local, task 6b; Highlights/Shadows, Clarity and Texture are in `colorlab.local_contrast`), camera calibration sliders (3 presets use them),
   raw-only Kelvin white balance, and Adobe built-in looks (1 preset).
 - RGBTable primaries/gamma enum values 2–4 (ProPhoto, P3, Rec.2020, gamma 1.8) follow the
   DNG SDK ordering and haven't been checked against a real sample yet.
