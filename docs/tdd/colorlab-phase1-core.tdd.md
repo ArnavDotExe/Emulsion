@@ -861,12 +861,108 @@ What Lightroom does from process version 15.4, studied from the decompiled tone 
   (7 bakes, max < 0.05) and `test_process_version_15_4_whites_and_blacks_known_gaps`, which pins
   the gap so it can't silently grow. 17 private tests pass.
 
+## Clarity and Texture (`colorlab.local_contrast`)
+
+Journey: as a photographer using an Emulsion look made from a Lightroom preset with Clarity or
+Texture, I want the camera to render them the way Lightroom does, at any capture size.
+
+### What Lightroom does (measured on `out/spatial-exports` and `out/spatial-scale-exports`)
+
+- Clarity changes only luminance. Carrying Lightroom's own luminance change to the identity
+  export as a linear-light ratio reproduces its export to 0.107 (+100) and 0.061 (−100).
+- Clarity follows the frame. The −50 halo at the 0.35/0.95 edge has the same profile at 768, 1536
+  and 3072 px wide when offsets are scaled by the width.
+- Negative Clarity leaves flat patches unchanged. Next to a bright area a dark one is lifted, up to
+  +0.19 (encoded) over about 60 px at 1536, while the bright side moves −0.04. On 0.2/0.8 bars both
+  sides move toward each other. So the pull is weighted toward the midtones: 0.35 and 0.8 move a
+  lot, 0.2 and 0.95 little.
+- Positive Clarity darkens the midtones of the base: a ramp's 0.23 comes out at 0.14 and 0.8 at
+  0.73 at +100, while black and white stay put. Both stripes of wide 0.2/0.8 bars darken by about
+  0.1. Fine detail rises (2 px bars ×1.46), and there is a wide, one-sided local contrast that
+  stays unmodelled (below).
+- Texture is fixed in pixels: radius 16 fits better than a frame-scaled radius at 768 (0.52 vs
+  0.58) and 3072 (0.11 vs 0.25). Luminance alone leaves 0.24 at ±100, so Texture also acts on
+  chroma: it runs on Y, Cb and Cr.
+
+### The model
+
+- Clarity, on `y = Y^(1/2.2)` with a Gaussian base `M` (sigma = width / 96) and a fine detail
+  (sigma = width / 1536, at least 0.5 px):
+  `y' = y + T(M) + D(y)·(y − M) + F(y)·(y − fine(y))`.
+  - `D`, `F` and `T` are 11-knot tables, fitted at ±100 by least squares with a second-difference
+    penalty (λ = 0.03; unpenalized they gave 0.496/1.791 against 0.497/1.853). They scale as
+    |amount/100| to the powers 0.86, 1.34 (negative) and 0.98, 0.875, 0.93 (positive), fitted
+    at ±25 and ±50.
+  - Negative uses `D` only (a midtone bell down to −0.78) and a small `F`. Positive adds the base
+    curve `T` (−0.03 to −0.09).
+- Texture is a guided filter (radius 16, eps 0.01, guided by Y) on Y, Cb and Cr:
+  `c' = c + g·(c − GF(c))`, with g = 0.617·a^0.56 for positive amounts and −0.621·a^0.73 for
+  negative ones (a = |amount|/100).
+
+### Rejected: the local Laplacian filter for Clarity
+
+- A fast local Laplacian (Paris et al. 2011, the sampled form used by darktable's
+  `locallaplacian.c`) was fitted first, with an asymmetric capped pull (negative) or an
+  edge-aware detail boost plus a curve on the coarse residual (positive), at 3 to 6 levels.
+  - Best: Clarity −100 0.85, +100 2.06 (free residual curve) or 2.46 (parametric curve).
+  - Its asymmetric pull was put on the wrong side of the edge: at the 0.35/0.95 edge it lifted
+    the dark side +0.05 and lowered the bright side −0.15, where Lightroom gives +0.19/−0.04.
+    It is halo-free by design, and Lightroom's Clarity has a wide halo.
+- It stays in the module as a tested filter, for Highlights/Shadows: Lightroom's Shadows shows no
+  halo. A border bug turned up along the way: the zero-insertion upsample wasn't normalized, so a
+  residual curve blew up the corners. It is fixed by dividing by the upsampled weight.
+- Also tried and rejected for Texture: per-band Laplacian gains (R² 0.66, 0.50 ΔE at +100) and a
+  luma-only guided filter (0.44).
+
+### Results (mean ΔE2000 on the 1536 × 1024 scene chart; ours / Lightroom's change from identity)
+
+| Slider | −100 | −50 | −25 | +25 | +50 | +100 |
+|---|---|---|---|---|---|---|
+| Clarity | 0.55 / 2.29 | 0.33 / 1.29 | 0.18 / 0.68 | 0.57 / 1.48 | 1.06 / 2.86 | 1.88 / 5.38 |
+| Texture | 0.33 / 0.68 | 0.20 / 0.41 | 0.12 / 0.22 | 0.15 / 0.27 | 0.21 / 0.46 | 0.30 / 0.71 |
+
+- At other sizes:
+
+  | Size | Clarity −50 | Clarity +50 | Texture +50 |
+  |---|---|---|---|
+  | 768 px | 0.34 / 1.29 | 1.36 / 3.49 | 0.52 / 0.92 |
+  | 3072 px | 0.33 / 1.29 | 1.06 / 2.70 | 0.11 / 0.26 |
+
+- Bar contrast gain at Clarity +100 (Lightroom / ours): 2 px 1.46/1.20, 4 px 0.99/1.07, 8 px+
+  within 0.03. At −100, every period is within 0.04.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Local Laplacian with the identity remap reproduces the image; a flat image stays flat; the residual curve applies; small detail is boosted while a big step keeps its height | `test_local_laplacian_*` (3) | PASS |
+| 2 | Guided filter smooths texture, keeps strong edges, leaves a flat source flat | `test_guided_filter_smooths_texture_but_keeps_strong_edges` | PASS |
+| 3 | Amount 0 is the identity; grays stay gray; range −100..100 | `test_zero_amounts_*`, `test_amounts_outside_*` | PASS |
+| 4 | Clarity's reach doubles with the frame (base sigma width/96); Texture's doesn't (radius 16) | `test_clarity_is_relative_to_the_frame_and_texture_is_fixed_in_pixels` | PASS |
+| 5 | Negative Clarity lifts the dark side of an edge more than it lowers the bright side; flats unchanged | `test_negative_clarity_lifts_the_dark_side_*` | PASS |
+| 6 | Positive Clarity darkens a flat midtone gray, keeps black and white, raises 2 px bar contrast; negative lowers it | `test_positive_clarity_darkens_the_midtones_*` | PASS |
+| 7 | Texture is monotone in amount on fine bars and leaves flats unchanged | `test_texture_raises_and_lowers_*` | PASS |
+| 8 | `apply_to_image` is Texture then Clarity; the CLI round-trips a 16-bit TIFF and reports errors | `test_apply_to_image_and_cli_round_trip` | PASS |
+| 9 | Clarity and Texture against Lightroom at 1536, 768 and 3072 px (private) | `tests/private/test_local_contrast_vs_lightroom.py` (3) | PASS |
+
+- RED `48e180a`: the 11 public tests fail at collection with `ModuleNotFoundError:
+  colorlab.local_contrast`; the other 467 pass.
+- GREEN `d3dec13`: 478 public + 20 private pass, coverage 98% (`local_contrast.py` 99%).
+  In GREEN, the RED test's `clarity_levels` check became `clarity_sigmas`, and the fine-bar check
+  uses 2 px bars on a 1536 px frame, as on the chart, once Clarity no longer used pyramid levels.
+- Known gaps:
+  - Positive Clarity leaves an unmodelled wide (about 200 px at 1536), one-sided local contrast.
+    It shows as ±0.07 gradients across the flat patches. Neither tone-of-base nor extra
+    symmetric or one-sided scales from 64 to 512 px took +100 below 1.84.
+  - The 2 px bar gain is 1.20 against 1.46.
+  - Texture at 768 px keeps 0.52 of 0.92.
+  - Neither effect is wired into `render` yet: they are image passes, and the app runs them as
+    shader passes. Lightroom's order is Texture, then Clarity, around the saturation stage.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
   (truncated-TIFF `struct.error`, non-UTF-8 XMP packets, empty-sample curves).
 - Pipeline: stage strengths (`K_*`) are first guesses until single-slider calibration. Not yet modelled:
-  Highlights/Shadows, Clarity, Texture, Dehaze (local, task 6b), camera calibration sliders (3 presets use them),
+  Highlights/Shadows, Dehaze (local, task 6b; Clarity and Texture are in `colorlab.local_contrast`), camera calibration sliders (3 presets use them),
   raw-only Kelvin white balance, and Adobe built-in looks (1 preset).
 - RGBTable primaries/gamma enum values 2–4 (ProPhoto, P3, Rec.2020, gamma 1.8) follow the
   DNG SDK ordering and haven't been checked against a real sample yet.

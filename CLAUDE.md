@@ -77,6 +77,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `collect` checks and copies the exports |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `film` | Halation (scatter + bounces, scene-anchored highlight boost) and particle grain, sized in µm on the film; ported from spektrafilm and darktable (credited in the header); `apply` CLI for TIFFs |
+| `local_contrast` | Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
@@ -173,8 +174,17 @@ Lightroom quirks:
     - Dehaze's halo grows to about 45 px, then stops growing.
   - For the app: Texture, Sharpening and grain must render at the output resolution, or be
     compensated, for previews to match exports.
-- 6b has started. The spatial calibration kit is built (`out/spatial-kit`, 70 images) and is waiting
-  for the user to export it from Lightroom. Next: `collect`, then measure each effect and model it.
+- 6b: the spatial kit is exported (`out/spatial-exports`, `out/spatial-scale-exports`).
+  Clarity and Texture are modelled (`colorlab.local_contrast`, d3dec13). Mean ΔE on the scene chart,
+  ours against Lightroom's change from identity:
+  - Clarity: −100 0.55/2.29, −50 0.33/1.29, +50 1.06/2.86, +100 1.88/5.38. It holds at 768 and
+    3072 px, because its base follows the frame.
+  - Texture: ±100 0.30–0.33/0.70, fixed 16 px.
+  - The local Laplacian fitted worse for Clarity (−100 0.85, +100 2.06). It moved the bright side
+    of an edge where Lightroom lifts the dark side, so it's kept only for Highlights/Shadows.
+  - Gap: positive Clarity's wide one-sided local contrast (about 200 px).
+  - Next in 6b: Highlights/Shadows, Dehaze, Sharpening, NR, vignette, grain; then wire the passes
+    into rendering.
 - Biggest single-slider gaps:
   - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
   - Vibrance −100 1.5 and Saturation +100 0.6.
