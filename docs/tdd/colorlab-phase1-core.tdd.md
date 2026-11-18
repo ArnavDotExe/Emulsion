@@ -761,15 +761,72 @@ the bakes (all clean-room code, our own names):
   - By process version (mean): PV 11 (15 presets) 0.55 → 0.58, PV 15.4 (24) 1.68 → 1.26
     (median 1.06 → 0.67), PV 6.7 (5) 2.02 → 2.08.
 - Known gaps:
-  - Lightroom's 15.4 luminance-mode curve stage isn't reconstructed. Its first half (a per-channel
-    lookup, a 0.30/0.59/0.11 luma delta added to every channel, and scaling back into gamut) is
-    understood, but how it converts values isn't.
+  - Lightroom's 15.4 curve stage: reconstructed in the next section. The pulled method turned out
+    to be the stage itself, not a stand-in.
   - All 9 presets that got worse have a custom master point curve, their own or a look's. The
     worst got worse by 0.68, a PV 6.7 preset with a heavy curve. On three PV 11 ones, the pulled
     method fits better than linear (for example 0.65 against 0.88), although the single-curve
     bakes favour linear (0.01). So real presets' curves seem to interact with something the
     single-slider bakes don't isolate. That's open.
   - Whites − and Blacks ± leave 0.1–0.4 on the extremes.
+
+## PV 15.4's curve stage and its luminance mode (Refine Saturation)
+
+Journey: as a photographer using an Emulsion look made from a PV 15.4 Lightroom preset, I want
+its tone curve, including a lowered Refine Saturation, to change colors the way Lightroom does.
+
+What Lightroom does from process version 15.4, studied from the decompiled tone stages
+(behaviour only; clean-room code, our own names):
+
+- Contrast, the parametric curve and the point curve go to a second tone stage as **one**
+  combined curve. That stage encodes linear values with the sRGB curve (a slope-extended
+  encode, our working encoding), applies the curve with the pulled min/max method, and decodes.
+- The pull is linear in (max, min) for a fixed middle place, so pulled tones compose exactly:
+  the three curves applied in turn give the same result. So the method the previous section
+  called a stand-in *is* this stage. Checked on the 24 PV 15.4 presets: one combined curve
+  scores identically (median 0.750, mean 1.123 overall). Reversing the curve order is worse
+  (0.797 / 1.157).
+- The stage's luminance mode runs only for the point curve, and only when `CurveRefineSaturation`
+  is below its default of 100. The point curve then leaves the combined curve for a stage of its
+  own with blend `(100 − value)/100`:
+  1. Each channel goes through the curve.
+  2. Every channel gets the same shift: the curved values' 0.30 R + 0.59 G + 0.11 B luma minus
+     the input's luma.
+  3. A result below 0 or above 1 is scaled toward that luma until it fits.
+  4. The result is mixed with the pulled tone.
+- All 28 private presets that carry the key use 100, so their renders don't change. No bake
+  covers PV 15.4 yet, so the luminance mode is reconstructed but not yet checked against
+  Lightroom.
+- Adding the pull to Whites + for non-Camera profiles at 15.4, which the decompile suggests,
+  made 3 presets worse (by up to 0.16), so it isn't in.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Pulled tones compose: one combined curve equals the curves in turn | `test_pulled_tones_compose_so_one_combined_curve_equals_the_curves_in_turn` | PASS (also before the change) |
+| 2 | Luminance mode at blend 0 is the pulled tone; grays get the curve at every blend | `test_luma_curve_at_blend_0_is_the_pulled_tone_and_keeps_grays_on_the_curve` | PASS |
+| 3 | One luma shift for all channels, scaled into range toward the curved luma, blended; matches an independent per-pixel solve | `test_luma_curve_shifts_every_channel_by_the_curved_luma_and_scales_back_into_range` (blend 1, 0.4) | PASS |
+| 4 | Refine Saturation 100 or absent changes nothing; 0 and 25 send only the master curve through the luminance mode, after Contrast; PV 11 ignores it; range check | `test_refine_saturation_below_100_sends_the_master_curve_through_the_luma_path_from_15_4` | PASS |
+| 5 | 11 PV 15.4 calibration variants, each with 2+ keys so the measured shapes stay PV 11's | `test_process_version_15_4_variants_check_the_15_4_tone_stages_and_stay_out_of_the_measured_shapes` | PASS |
+
+- RED `a2bbc8f`: 5 failed, 208 passed. Four pipeline tests fail with `ImportError: luma_curve`,
+  and the calibration test fails because there's no `Cal PV15 Contrast +100` variant.
+- GREEN `d4a3dc5`: 482 passed (467 public), coverage 98% (`pipeline.py` 99%, `calibration.py` 98%).
+- Kit: `out/cal-presets-pv15` (11 presets, from `presets … --only-missing out/cal-luts`) and
+  `out/cal-pv15-kit`. It's waiting for a Lightroom export, then
+  `bake collect <exports> out/cal-pv15-kit out/cal-luts`.
+- What the bakes will test (our PV 15.4 model against our PV 11 model, mean / max ΔE):
+
+  | Variant | Mean | Max |
+  |---|---|---|
+  | Contrast +100 | 0.97 | 6.2 |
+  | Parametric Darks −100 | 1.61 | 8.2 |
+  | Master S | 0.74 | 4.6 |
+  | Refine 0 | 3.18 | 10.0 |
+  | Refine 50 | 1.62 | 5.1 |
+  | Contrast +50 with Refine 0 | 2.97 | 9.9 |
+
+  Whites/Blacks ±100 and the red curve are predicted the same as PV 11 (0.00), so those bakes
+  test that assumption.
 
 ## Coverage and known gaps
 

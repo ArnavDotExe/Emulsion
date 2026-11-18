@@ -117,8 +117,12 @@ Lightroom quirks:
   - Whites/Blacks run first, with exposure. Whites + uses linear min/max, Whites − and Blacks +
     one scene-scale gain at the (R + 2G + B)/4 key, and Blacks − each channel on the scene scale.
   - Contrast, parametric and master curve use linear min/max before process version 15.4. From
-    15.4 they use encoded min/max pulled toward the middle channel (`rgb_tone(pull=True)`), a
-    stand-in for Lightroom's unreconstructed luminance-mode stage.
+    15.4 Lightroom combines them into one curve on sRGB-encoded values with min/max pulled toward
+    the middle channel (`rgb_tone(pull=True)`). Pulled tones compose exactly, so applying them in
+    turn is the same.
+  - `CurveRefineSaturation` below 100 (PV ≥ 15.4) sends the point curve through the luminance mode
+    (`pipeline.luma_curve`): one 0.30/0.59/0.11 luma shift for all channels, scaled into range,
+    blended by (100 − value)/100. All the private presets use 100.
   - Per-channel curves stay per channel.
   - Tone bakes are now 0.05 (worst Blacks −100 0.39). The 9 presets that got worse all have custom
     master curves; see the TDD doc.
@@ -149,7 +153,12 @@ Lightroom quirks:
 - ProPhoto exports of all 147 bakes are in `out/cal-exports-prophoto` (16-bit, gamma 1.8). They
   show that Lightroom's sRGB export is a plain clip of its ProPhoto result (0.006 ΔE), with no
   gamut mapping, and they keep out-of-sRGB colors for checking the model.
-- All 147 calibration bakes are collected (mean 0.18 ΔE); no re-bake is pending.
+- All 147 PV 11 calibration bakes are collected (mean 0.18 ΔE).
+- The 11 PV 15.4 checks (`Cal PV15 …`: Contrast, Parametric Darks, Whites/Blacks ±100, Master S,
+  Red, Refine 0/50, Contrast +50 with Refine 0) are kitted in `out/cal-pv15-kit` and are waiting
+  for a Lightroom export. Then run
+  `python -m colorlab.bake collect <exports> out/cal-pv15-kit out/cal-luts`. They're the first
+  Lightroom check of PV 15.4.
 - Spatial facts measured from the exports (`out/spatial-exports`, `out/spatial-scale-exports`):
   - Identity exports match the charts (TIFFs get no default sharpening or NR), and grain is
     deterministic (repeat exports are bit-identical).
