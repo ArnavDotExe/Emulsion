@@ -1,8 +1,9 @@
-"""Local contrast: Clarity and Texture, fitted to Lightroom's exports.
+"""Local tone and contrast: Highlights, Shadows, Clarity and Texture, fitted to Lightroom's exports.
 
-    python -m colorlab.local_contrast apply in.tif out.tif [--clarity 40] [--texture 25]
+    python -m colorlab.local_contrast apply in.tif out.tif [--highlights -40] [--shadows 30]
+                                                           [--clarity 40] [--texture 25]
 
-Both are fitted to Lightroom's own exports of the spatial calibration charts
+All four are fitted to Lightroom's own exports of the spatial calibration charts
 (``colorlab.spatial_calibration``). They work on sRGB-encoded H x W x 3 images (0..1), so they
 run as shader passes around a look's LUT, like :mod:`colorlab.film`.
 
@@ -23,10 +24,20 @@ of the amount. Both directions are midtone-weighted, like Lightroom:
 * Positive Clarity raises fine detail, darkens the base's midtones (a flat 0.5 gray comes out
   near 0.45 at +100) and slightly lowers detail in the highlights.
 
-A local Laplacian filter (:func:`local_laplacian`) was fitted first and is kept for
-Highlights/Shadows, which Lightroom renders without a halo. It doesn't fit Clarity: it is
-halo-free by design, while Lightroom's Clarity has a wide, one-sided halo. On a dark/bright
-edge it moved the bright side instead of the dark one.
+A local Laplacian filter (:func:`local_laplacian`) was fitted first, for Clarity and for
+Highlights/Shadows, and fits neither: it is halo-free by design, while Lightroom's Clarity has a
+wide, one-sided halo (on a dark/bright edge it moved the bright side instead of the dark one),
+and as a tone table it scored worse than the base-and-pixel table below. It is kept as a tested
+filter.
+
+Highlights and Shadows (:func:`highlights_shadows`) are one local tone stage: a change of ``y``
+read from a table over the pixel (half blurred by 1 px, so the finest detail keeps more of its
+contrast) and a Gaussian base of 1/32 of the frame width. Lightroom's change follows the frame
+and depends on the neighbourhood: a flat patch next to a brighter or darker one is moved by a
+gradient a few hundred px long, yet an edge gets no halo. Each slider has its own tables at 25,
+50 and 100 per direction, interpolated in between. The change is carried to the channels in
+sRGB-encoded values: luminance moves to the new value and each channel's difference from it is
+scaled by the square root of the luminance ratio.
 
 Texture (:func:`texture`) is a guided filter of fixed 16 px radius on Y, Cb and Cr (guided by
 Y): it scales each channel's difference from its edge-preserving smooth. Its size doesn't
@@ -47,7 +58,10 @@ filter is from He, Sun and Tang, "Guided Image Filtering" (ECCV 2010).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from functools import lru_cache
+from importlib import resources
 from pathlib import Path
 from typing import Callable
 
@@ -82,6 +96,10 @@ CLARITY_TABLES = {
 TEXTURE_RADIUS = 16
 TEXTURE_EPS = 0.01
 TEXTURE_GAIN = {1: (0.617, 0.56), -1: (0.621, 0.73)}  # gain = scale * |amount / 100| ** power
+
+LOCAL_TONE_BASE_FRACTION = 1.0 / 32.0  # sigma of the Highlights/Shadows base, per frame width
+LOCAL_TONE_CARRY = 0.5  # channel differences scale by (encoded luma ratio) ** this
+_TONE_AMOUNTS = (25, 50, 100)
 
 
 def _check(name: str, value: float, lo: float, hi: float) -> float:
@@ -219,9 +237,66 @@ def texture(encoded: np.ndarray, amount: float) -> np.ndarray:
     return np.clip(out @ _YCC_INV.T, 0.0, 1.0)
 
 
-def apply_to_image(encoded: np.ndarray, clarity_amount: float = 0.0, texture_amount: float = 0.0) -> np.ndarray:
-    """Texture then Clarity, in Lightroom's order, on an sRGB-encoded H x W x 3 image."""
-    return clarity(texture(encoded, texture_amount), clarity_amount)
+@lru_cache(maxsize=1)
+def _local_tone_tables() -> dict[str, dict[int, np.ndarray]]:
+    """The fitted ``y`` change per slider and signed amount, each a (pixel knots x base knots) grid."""
+    data = json.loads((resources.files("colorlab") / "data" / "local_tone.json").read_text(encoding="utf-8"))
+    shape = (data["pixel_knots"], data["base_knots"])
+    return {s: {int(a): np.asarray(v, dtype=np.float64).reshape(shape) for a, v in data[s].items()}
+            for s in ("highlights", "shadows")}
+
+
+def local_tone_sigma(width: int) -> float:
+    """Sigma (px) of the Highlights/Shadows base for a frame ``width`` px wide."""
+    return width * LOCAL_TONE_BASE_FRACTION
+
+
+def _amount_table(tables: dict[int, np.ndarray], amount: float) -> np.ndarray:
+    """The table for ``amount``, linear between the fitted 25, 50 and 100 (and 0 at 0)."""
+    sign, mag = (1 if amount > 0 else -1), abs(amount)
+    grid = (0,) + _TONE_AMOUNTS
+    hi = next(i for i, a in enumerate(grid) if a >= mag)
+    t = (mag - grid[hi - 1]) / (grid[hi] - grid[hi - 1])
+    lower = tables[sign * grid[hi - 1]] if hi > 1 else 0.0
+    return (1 - t) * lower + t * tables[sign * grid[hi]]
+
+
+def _bilinear(table: np.ndarray, p: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``table`` (knots evenly over 0..1 on both axes) at the points (p, b)."""
+    def split(v: np.ndarray, n: int):
+        t = np.clip(v, 0.0, 1.0) * (n - 1)
+        i = np.minimum(t.astype(int), n - 2)
+        return i, t - i
+    i, fi = split(p, table.shape[0])
+    j, fj = split(b, table.shape[1])
+    return ((1 - fi) * ((1 - fj) * table[i, j] + fj * table[i, j + 1])
+            + fi * ((1 - fj) * table[i + 1, j] + fj * table[i + 1, j + 1]))
+
+
+def highlights_shadows(encoded: np.ndarray, highlights: float = 0.0, shadows: float = 0.0) -> np.ndarray:
+    """Lightroom-style Highlights and Shadows (each -100..100) on an sRGB-encoded H x W x 3 image."""
+    amounts = {"highlights": _check("highlights", highlights, -100.0, 100.0),
+               "shadows": _check("shadows", shadows, -100.0, 100.0)}
+    img = np.clip(np.asarray(encoded, dtype=np.float64), 0.0, 1.0)
+    if not any(amounts.values()):
+        return img
+    lum = np.maximum(decode(img, Transfer.SRGB) @ SRGB_LUMA, 1e-6)
+    y = lum ** (1.0 / LUMA_GAMMA)
+    pixel = (y + gaussian_blur(y, 1.0)) / 2.0
+    base = gaussian_blur(y, local_tone_sigma(y.shape[1]))
+    tables = _local_tone_tables()
+    delta = sum(_bilinear(_amount_table(tables[name], a), pixel, base) for name, a in amounts.items() if a)
+    old = encode(np.clip(lum, 0.0, 1.0), Transfer.SRGB)
+    new = encode(np.clip(np.maximum(y + delta, 0.0) ** LUMA_GAMMA, 0.0, 1.0), Transfer.SRGB)
+    scale = (new / np.maximum(old, 1e-6)) ** LOCAL_TONE_CARRY
+    return np.clip(new[..., None] + (img - old[..., None]) * scale[..., None], 0.0, 1.0)
+
+
+def apply_to_image(encoded: np.ndarray, clarity_amount: float = 0.0, texture_amount: float = 0.0,
+                   highlights_amount: float = 0.0, shadows_amount: float = 0.0) -> np.ndarray:
+    """Highlights/Shadows, Texture, then Clarity on an sRGB-encoded H x W x 3 image."""
+    toned = highlights_shadows(encoded, highlights_amount, shadows_amount)
+    return clarity(texture(toned, texture_amount), clarity_amount)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -229,11 +304,13 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="python -m colorlab.local_contrast", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    app = sub.add_parser("apply", help="apply Clarity and Texture to an sRGB TIFF")
+    app = sub.add_parser("apply", help="apply Highlights, Shadows, Clarity and Texture to an sRGB TIFF")
     app.add_argument("input", type=Path)
     app.add_argument("output", type=Path)
     app.add_argument("--clarity", type=float, default=0.0)
     app.add_argument("--texture", type=float, default=0.0)
+    app.add_argument("--highlights", type=float, default=0.0)
+    app.add_argument("--shadows", type=float, default=0.0)
     args = parser.parse_args(argv)
     try:
         data = tifffile.imread(args.input)
@@ -241,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(f"{args.input} is not an RGB image")
         rgb = data[..., :3]
         scale = float(np.iinfo(rgb.dtype).max) if rgb.dtype.kind in "ui" else 1.0
-        out = apply_to_image(rgb / scale, args.clarity, args.texture)
+        out = apply_to_image(rgb / scale, args.clarity, args.texture, args.highlights, args.shadows)
         out = np.round(out * scale).astype(rgb.dtype) if rgb.dtype.kind in "ui" else out.astype(rgb.dtype)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         tifffile.imwrite(args.output, out, photometric="rgb")
