@@ -5,7 +5,7 @@ import pytest
 
 from colorlab.errors import ParameterError
 from colorlab.finish import apply_settings, lightroom_grain, noise_reduction, sharpen, vignette
-from colorlab.local_contrast import dehaze
+from colorlab.local_contrast import dehaze, highlights_shadows
 
 
 def flat(level: float, width: int = 384) -> np.ndarray:
@@ -188,3 +188,28 @@ def test_finish_cli_applies_a_presets_spatial_passes(tmp_path):
         apply_settings(img, {"Sharpness": "lots"})
     with pytest.raises(ParameterError):
         vignette(img[..., :2], -10)
+
+
+# --- whole presets -------------------------------------------------------------------------------
+
+def test_render_preset_runs_the_look_then_the_spatial_passes_in_either_order():
+    from colorlab.finish import render_preset
+    from colorlab.pipeline import render
+    from colorlab.preset import parse_preset
+    from conftest import make_xmp
+
+    img = edge(96)
+    plain = parse_preset(make_xmp())
+    np.testing.assert_allclose(render_preset(plain, img), render(plain, img), atol=1e-6)
+    settings = {"Exposure2012": "+0.30", "Shadows2012": "+40", "Sharpness": "40", "PostCropVignetteAmount": "-30",
+                "GrainAmount": "20"}
+    preset = parse_preset(make_xmp(settings))
+    after = render_preset(preset, img, seed=2)
+    np.testing.assert_allclose(after, apply_settings(render(preset, img), preset.settings, seed=2), atol=1e-6)
+    before = render_preset(preset, img, seed=2, local_first=True)
+    local = sharpen(highlights_shadows(img, 0, 40), 40)
+    expected = lightroom_grain(vignette(render(preset, local), -30), 20, seed=2)
+    np.testing.assert_allclose(before, expected, atol=1e-6)
+    assert np.abs(before - after).mean() > 1e-4
+    own = render_preset(preset, img, seed=2, look=lambda x: x)  # a stand-in for the global look
+    np.testing.assert_allclose(own, apply_settings(img, preset.settings, seed=2), atol=1e-6)

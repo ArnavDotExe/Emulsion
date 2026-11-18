@@ -276,3 +276,16 @@ def test_cli_lists_untouched_exports(tmp_path, capsys):
     write_hald_tiff(exports / "FilmSim Bake - Test Preset.tif", level=2)
     main(["collect", str(exports), str(kit), str(out)])
     assert "unchanged (preset not applied): FilmSim Bake - Test Preset" in capsys.readouterr().out
+
+
+def test_full_copy_keeps_spatial_settings_and_still_neutralizes_geometry():
+    from colorlab.bake import GEOMETRY_SETTINGS, SPATIAL_SETTINGS
+
+    assert set(SPATIAL_SETTINGS) | set(GEOMETRY_SETTINGS) == set(NEUTRALIZED_SETTINGS)
+    src = make_xmp({**SPATIAL, "CropTop": "0.1", "HasCrop": "True", "Exposure2012": "+0.50"})
+    full = parse_preset(make_bake_xmp(src, "FilmSim Full - X", group="FilmSim Full Check", keep_spatial=True))
+    for key, value in SPATIAL.items():
+        assert full.number(key) == float(value)
+    assert full.number("CropTop") == 0.0 and full.text("HasCrop") == "False"
+    assert full.number("Exposure2012") == 0.5 and full.name == "FilmSim Full - X"
+    assert "FilmSim Full Check" in make_bake_xmp(src, "FilmSim Full - X", group="FilmSim Full Check")
