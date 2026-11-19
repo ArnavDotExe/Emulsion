@@ -2180,6 +2180,27 @@ stabilisation off in the preview, capture and every request, the scale is 1.00 a
 
 Not done: the unit tests don't cover the camera binding.
 
+### Photo speed: 3.4 s to 0.8 s, and the shutter frees after 0.3 s
+
+Timed on the Pixel 11 (12 MP, a film applied), per stage in ms (the `photo ms` log line):
+
+| Stage | Before | After |
+|---|---|---|
+| Sensor capture | 300-370 | 290-380 |
+| Decode and rotate | 195-225 | 190-230 |
+| Film (LUT) | **2160-2770** | **86-144** |
+| Encode and save | 130-170 | 120-160 |
+| Total | 2880-3540 | 800-950 |
+
+The film step was the cost: `Lut3D.lookup` allocates six small arrays per pixel, 70 million
+allocations per photo. `applyArgb` now does the same arithmetic in the same order with none
+(28x faster). Safety net, added first (passes before and after): `ArgbTest` compares `applyArgb`
+with the rounded reference lookup on a dense grid with many ties, grays, extremes and 20,000
+random pixels, over random tables of 2, 5, 17 and 33 points whose entries overshoot 0..1. All 12
+`:look` tests pass. The decode also left the UI thread, and the shutter now frees as soon as the
+sensor has captured: photos develop one at a time in the background (four taps 0.7 s apart saved
+4 of 4, no errors).
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

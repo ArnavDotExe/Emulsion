@@ -73,6 +73,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -231,30 +233,56 @@ fun CameraScreen() {
     }
     DisposableEffect(Unit) { onDispose { processor.release() } }
 
+    // Photos develop one at a time in the background: the shutter is free again as soon as the sensor
+    // has captured, so shots can follow each other.
+    val develop = remember { Semaphore(1) }
+    var developing by remember { mutableIntStateOf(0) }
+
     fun takePhoto() {
         busy = true
         panel = QuickPanel.NONE
+        val shotLook = look
         scope.launch {
             for (s in timer.seconds downTo 1) {
                 countdown = s
                 delay(1000)
             }
             countdown = 0
-            status = "Developing..."
-            status = try {
-                val image = capture.takePicture(context)
-                val bitmap = try { image.uprightBitmap() } finally { image.close() }
-                renderLook(bitmap, look)
-                val uri = saveToGallery(context, bitmap, look?.name)
-                bitmap.recycle()
-                lastPhoto = uri
-                thumb = thumbnail(context, uri)
-                "Saved to DCIM/Emulsion"
+            val t0 = System.nanoTime()
+            val image = try {
+                capture.takePicture(context)
             } catch (e: Exception) {
                 Log.e(TAG, "capture failed", e)
-                "Capture failed: ${e.message}"
+                status = "Capture failed: ${e.message}"
+                busy = false
+                return@launch
             }
+            val t1 = System.nanoTime()
             busy = false
+            developing++
+            status = "Developing..."
+            status = try {
+                develop.withPermit {
+                    val bitmap = withContext(Dispatchers.Default) { try { image.uprightBitmap() } finally { image.close() } }
+                    val t2 = System.nanoTime()
+                    renderLook(bitmap, shotLook)
+                    val t3 = System.nanoTime()
+                    val uri = saveToGallery(context, bitmap, shotLook?.name)
+                    val t4 = System.nanoTime()
+                    bitmap.recycle()
+                    lastPhoto = uri
+                    thumb = thumbnail(context, uri)
+                    Log.i(TAG, "photo ms: capture ${(t1 - t0) / 1_000_000} decode+rotate ${(t2 - t1) / 1_000_000} " +
+                        "look ${(t3 - t2) / 1_000_000} encode+save ${(t4 - t3) / 1_000_000} total ${(System.nanoTime() - t0) / 1_000_000}")
+                }
+                "Saved to DCIM/Emulsion"
+            } catch (e: Exception) {
+                image.close()
+                Log.e(TAG, "develop failed", e)
+                "Capture failed: ${e.message}"
+            } finally {
+                developing--
+            }
         }
     }
 

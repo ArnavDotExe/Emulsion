@@ -150,6 +150,9 @@ python look/src/test/fixtures/make_conformance.py      # regenerate the fixtures
     and manual ISO, shutter, focus and white balance. With auto-exposure off the Pixel's auto
     white balance drifts strongly cyan, so manual exposure holds the last automatic gains and
     colour matrix.
+- Photo speed: `Lut3D.applyArgb` must stay allocation-free (the per-pixel `lookup` allocates and costs
+  2.5 s per 12 MP photo; `ArgbTest` pins them equal). Photos develop in the background, one at a time
+  (`CameraScreen.takePhoto`); the `photo ms` log line times each stage.
 - To bake the looks again, run colorlab's `fsim.from_preset` on every private preset, keeping the
   names in `looks/private/ship_names.json` (a private name table) so a look keeps its name. Mobile
   `.dng` copies identical to an `.xmp` are skipped.

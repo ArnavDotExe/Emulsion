@@ -53,13 +53,57 @@ class Lut3D(val size: Int, private val data: FloatArray) {
     /**
      * Apply the LUT in place to 8-bit ARGB pixels `[from, to)` (Android's `Bitmap` layout):
      * each colour is looked up and rounded back to 8 bits; alpha is kept.
+     *
+     * The same tetrahedral interpolation as [lookup], with the same arithmetic in the same order
+     * (so every result is identical), but with no allocation per pixel: a photo has 12 million
+     * pixels and [lookup] allocates six small arrays each, which made the garbage collector
+     * dominate (2.4 s for a 12 MP photo).
      */
     fun applyArgb(pixels: IntArray, from: Int = 0, to: Int = pixels.size) {
-        val out = FloatArray(3)
+        val n1 = (size - 1).toDouble()
+        val last = size - 2
+        val strideR = 3
+        val strideG = 3 * size
+        val strideB = 3 * size * size
+        val d = data
         for (i in from until to) {
             val p = pixels[i]
-            lookup(((p shr 16) and 255) / 255f, ((p shr 8) and 255) / 255f, (p and 255) / 255f, out)
-            pixels[i] = (p and -0x1000000) or (byte(out[0]) shl 16) or (byte(out[1]) shl 8) or byte(out[2])
+            val xr = (((p shr 16) and 255) / 255f).toDouble() * n1
+            val xg = (((p shr 8) and 255) / 255f).toDouble() * n1
+            val xb = ((p and 255) / 255f).toDouble() * n1
+            val ir = minOf(xr.toInt(), last)
+            val ig = minOf(xg.toInt(), last)
+            val ib = minOf(xb.toInt(), last)
+            val fr = xr - ir
+            val fg = xg - ig
+            val fb = xb - ib
+            // The stable descending order of the fractions (ties: red, green, blue): the axis with the
+            // largest fraction is stepped first.
+            val f1: Double; val f2: Double; val f3: Double
+            val s1: Int; val s2: Int; val s3: Int
+            if (fr >= fg) {
+                if (fg >= fb) { f1 = fr; f2 = fg; f3 = fb; s1 = strideR; s2 = strideG; s3 = strideB }
+                else if (fr >= fb) { f1 = fr; f2 = fb; f3 = fg; s1 = strideR; s2 = strideB; s3 = strideG }
+                else { f1 = fb; f2 = fr; f3 = fg; s1 = strideB; s2 = strideR; s3 = strideG }
+            } else {
+                if (fr >= fb) { f1 = fg; f2 = fr; f3 = fb; s1 = strideG; s2 = strideR; s3 = strideB }
+                else if (fg >= fb) { f1 = fg; f2 = fb; f3 = fr; s1 = strideG; s2 = strideB; s3 = strideR }
+                else { f1 = fb; f2 = fg; f3 = fr; s1 = strideB; s2 = strideG; s3 = strideR }
+            }
+            val w0 = 1 - f1
+            val w1 = f1 - f2
+            val w2 = f2 - f3
+            var idx = (ib * size + ig) * size * 3 + ir * 3
+            var outR = w0 * d[idx]
+            var outG = w0 * d[idx + 1]
+            var outB = w0 * d[idx + 2]
+            idx += s1
+            outR += w1 * d[idx]; outG += w1 * d[idx + 1]; outB += w1 * d[idx + 2]
+            idx += s2
+            outR += w2 * d[idx]; outG += w2 * d[idx + 1]; outB += w2 * d[idx + 2]
+            idx += s3
+            outR += f3 * d[idx]; outG += f3 * d[idx + 1]; outB += f3 * d[idx + 2]
+            pixels[i] = (p and -0x1000000) or (byte(outR.toFloat()) shl 16) or (byte(outG.toFloat()) shl 8) or byte(outB.toFloat())
         }
     }
 
