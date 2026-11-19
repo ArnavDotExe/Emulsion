@@ -21,7 +21,8 @@ CIEDE2000 against Lightroom's exports of the spatial calibration charts) are rec
 * :func:`sharpen`, an unsharp mask on encoded luma whose overshoot is clamped, far more on the
   dark side than the bright side, like Lightroom's at Detail 25. It is fixed in pixels. Radius
   widens the kernel; Detail above 25 narrows it toward the ringing Lightroom shows at 100.
-  Masking is accepted but not modelled: on the charts' clean edges it changed nothing.
+  Masking keeps it to strong edges: a soft threshold on the gradient of luma blurred by 1 px,
+  blended in as (masking / 100) ^ 4, so it barely acts below 50, as in Lightroom.
 * :func:`noise_reduction`. Luminance runs a 3 px guided filter on Y (BT.601), blended by
   ``(amount / 100) ** 0.5``, so faint noise goes before strong noise, as in Lightroom. Color is a
   Gaussian blur (sigma 8 px) of Cb and Cr. Lightroom gave the same result at 25, 50 and 100 on
@@ -164,14 +165,20 @@ def vignette(encoded: np.ndarray, amount: float, midpoint: float = 50.0, feather
 
 # --- sharpening ----------------------------------------------------------------------------------
 
+#: Sharpening Masking (fitted to Masking 25/50/100 on the scene chart): an edge mask from the
+#: gradient of luma blurred by 1 px, ``MASK_TOP * clip((g - threshold) / width)``, blended in by
+#: ``(masking / 100) ** MASK_POWER``
+MASK_SIGMA, MASK_THRESHOLD, MASK_WIDTH, MASK_TOP, MASK_POWER = 1.0, 0.05, 0.1, 0.8, 4.0
+
+
 def sharpen(encoded: np.ndarray, amount: float, radius: float = 1.0, detail: float = 25.0,
             masking: float = 0.0) -> np.ndarray:
     """Lightroom-style sharpening (amount 0..150, radius 0.5..3, detail and masking 0..100) on an
-    sRGB-encoded H x W x 3 image. ``masking`` is accepted but not modelled (see the module notes)."""
+    sRGB-encoded H x W x 3 image. ``masking`` keeps the sharpening to strong edges."""
     amount = _check("sharpening amount", amount, 0, 150)
     radius = _check("sharpening radius", radius, 0.5, 3.0)
     detail = _check("sharpening detail", detail, 0, 100)
-    _check("sharpening masking", masking, 0, 100)
+    masking = _check("sharpening masking", masking, 0, 100)
     img = _image(encoded)
     if amount == 0:
         return img
@@ -189,6 +196,10 @@ def sharpen(encoded: np.ndarray, amount: float, radius: float = 1.0, detail: flo
     up *= radius ** s["up_radius_power"]
     y = img @ _YCC[0]
     boost = np.clip(k * (y - gaussian_blur(y, sigma)), -down, up)
+    if masking:
+        gy, gx = np.gradient(gaussian_blur(y, MASK_SIGMA))
+        edges = MASK_TOP * np.clip((np.hypot(gx, gy) - MASK_THRESHOLD) / MASK_WIDTH, 0.0, 1.0)
+        boost = boost * (1.0 + (masking / 100.0) ** MASK_POWER * (edges - 1.0))
     return np.clip(img + boost[..., None], 0.0, 1.0)
 
 
