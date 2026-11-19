@@ -2092,6 +2092,33 @@ dropping its value scale, saturation scale or hue shift 1.26 / 1.39 / 1.26; tril
 Each part helps and the current arrangement is the best found; separating the table from the map
 needs Lightroom bakes.
 
+## The Android app: the look module, the bundled looks and the camera
+
+The app lives in `android/`. Its `:look` module is plain Kotlin, so its tests run on the JVM against
+fixtures written by colorlab (`android/look/src/test/fixtures/make_conformance.py`): a synthetic
+look of our own settings, 248 colours with colorlab's tetrahedral lookup, and 21 invalid look files
+that colorlab rejects. CI regenerates the fixtures and fails if they differ from the committed ones.
+
+| Commit | Stage | Evidence |
+|---|---|---|
+| a9777db | RED | `./gradlew :look:test`: compile errors, `FsimReader`, `Section`, `FsimFormatException`, `Lut3D` unresolved |
+| fd22338 | GREEN | 5 tests, 0 failures: the reference look's settings and defaults, all 21 invalid files and text over 8 MiB rejected, lookup within 2e-6 of colorlab on 248 colours |
+| 7236329 | RED | `LookSource`, `LookLibrary` unresolved; the 57 bundled looks added |
+| d0bb20f | GREEN | 8 tests: every bundled look parses as a 33-point LUT under its slug file name with author, licence and description; the library sorts, finds by name, rejects bad files and repeated names |
+| 2eb832e | RED | `Lut3D.applyArgb` unresolved |
+| 8a880bd | GREEN | 11 tests: `applyArgb` equals the rounded lookup on 4096 pixels with alpha kept, touches only its range, identity changes nothing |
+| 371f352 | build | `./gradlew :app:lintDebug :app:assembleDebug`: no lint issues, debug APK with the 57 looks |
+
+The bundled looks are every private preset baked with `fsim.from_preset` (33 points) under names
+of our own, grouped by the LUT's character (black and white, warm, cool, neutral), with a
+description made from the LUT (contrast, faded blacks, colour, grain, vignette). Two presets built
+on Adobe's installed profile looks are left out. The name map stays in `looks/private/`.
+
+The preview renders the LUT on the GPU with the same tetrahedra as `Lut3D.lookup`, and captures
+run `Lut3D.applyArgb` at full resolution, so they share the tested lookup. Not yet checked: the app
+on a device (orientation, the preview's colour against the capture), and the spatial passes, which
+aren't ported yet.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

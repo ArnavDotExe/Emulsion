@@ -5,8 +5,9 @@ Dazz Cam and Leica LUX, which don't exist on Android. Emulsion aims to give
 Android photographers analog-style looks, film simulations and filters,
 with a color pipeline that is open, measurable and hackable.
 
-> **Status: early development.** Right now the repo holds the Python
-> *color lab* that defines and tests the color science. The Android app comes next.
+> **Status: early development.** The repo holds the Python *color lab* that defines and
+> tests the color science, and the first Android app: a camera with 57 bundled looks, a live
+> GPU preview of the selected look and full-resolution captures saved to `DCIM/Emulsion`.
 
 ## What's here
 
@@ -14,25 +15,36 @@ with a color pipeline that is open, measurable and hackable.
 |---|---|
 | [`tools/colorlab/`](tools/colorlab/) | Python reference implementation: color spaces, 3D LUTs (`.cube`, Hald), Lightroom/Camera Raw preset reading (`.xmp`, mobile `.dng`), Adobe RGBTable decoding |
 | [`docs/`](docs/) | Design notes and test evidence |
-| `looks/` | Open look definitions shipped with the app *(coming)* |
+| [`android/`](android/) | The Android app (Kotlin, Compose, CameraX, OpenGL ES 3) and its `:look` module, tested against the color lab |
+| [`android/app/src/main/assets/looks/`](android/app/src/main/assets/looks/) | The bundled looks, as `.fsim.json` files |
 
 ## Roadmap
 
-1. **Color lab** (in progress): preset/LUT tooling done; reference film pipeline next
-   (tone, curves, HSL, color grading, look tables, grain, vignette), then
-   checks against Lightroom renders.
-2. **Android app**: Kotlin, Jetpack Compose and CameraX, with an OpenGL ES 3 film engine whose
-   output is tested against the Python reference.
+1. **Color lab** (done): the reference film pipeline (tone, curves, HSL, color grading, look
+   tables, local contrast, grain, vignette), checked against Lightroom renders.
+2. **Android app** (in progress): Kotlin, Jetpack Compose and CameraX, with an OpenGL ES 3 film
+   engine whose output is tested against the Python reference. The look's colour runs in the
+   preview and on captures; local contrast, vignette and grain come next.
 3. **Cameras**: recipes combining a look, grain, light leaks, dust, frames, date stamps
    and more, with every overlay generated procedurally.
 4. **Editor**: apply looks to existing photos; import `.xmp`, `.dng`, `.cube` and `.fsim` looks.
 5. Fuji-style film simulations, RAW processing and lens/depth effects.
 
-## Bring your own presets
+## Looks and presets
 
-Emulsion ships **no third-party presets or LUTs**. If you own Lightroom presets,
-put them in `presets/private/`. That folder, `looks/private/` and `samples/`
-are gitignored, so personal or commercial files are never committed.
+The bundled looks are baked by the color lab into Emulsion's own `.fsim.json` format and carry
+names of our own. Raw preset files are never committed: put Lightroom presets you own in
+`presets/private/`. That folder, `looks/private/` and `samples/` are gitignored.
+
+## Build the app
+
+Needs JDK 21 and the Android SDK (platform 37), with `sdk.dir` in `android/local.properties`:
+
+```bash
+cd android
+./gradlew :look:test            # the look module against the color lab's fixtures
+./gradlew :app:assembleDebug    # app/build/outputs/apk/debug/app-debug.apk
+```
 
 ## Develop the color lab
 

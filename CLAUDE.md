@@ -8,9 +8,9 @@ Context for Claude Code sessions on this repo, on any machine.
 spirit of Dazz Cam and Leica LUX, which aren't on Android. The main test device is a Pixel.
 Repo: https://github.com/ArnavDotExe/Emulsion
 
-Right now the repo holds the **Python color lab** (`tools/colorlab`), the reference implementation
-of the color science. The Android app (Kotlin, Compose, CameraX, OpenGL ES 3 film engine tested
-against the Python reference) comes later.
+The repo holds the **Python color lab** (`tools/colorlab`), the reference implementation of the
+color science, and the **Android app** (`android/`: Kotlin, Compose, CameraX, an OpenGL ES 3 film
+engine tested against the Python reference).
 
 ### Naming: Emulsion vs FilmSim
 
@@ -32,9 +32,19 @@ against the Python reference) comes later.
 
   All of these are gitignored. Never commit them, quote preset or pack names in tracked files, or
   move them elsewhere.
+- **Shipped looks** (the user's decision, 2026-11-19: "ship the public app with all the looks"):
+  `android/app/src/main/assets/looks/` holds every private preset baked to `.fsim.json` under a
+  name of our own, with author Emulsion, GPL-3.0-or-later and a description made from the LUT.
+  - The raw presets stay private. The name map (shipped name -> source file) is
+    `looks/private/ship_names.json`, gitignored; never write it into a tracked file.
+  - Shipped names and descriptions never use pack, preset, film stock or camera-maker names.
+  - Presets built on Adobe's installed profile looks are left out (Adobe's data stays local).
 - **Before every push**, scan tracked files for pack and look names. Build the term list from the
   file names in `presets/private/` and `looks/private/`, for example
   `git grep -n -i -E "<pack>|<look>|..."`, and fix every hit. Don't write that list into any tracked file.
+  The looks' base64 `"data"` lines match short terms by chance: drop those lines from the hits
+  (`| grep -v -E '^android/app/src/main/assets/looks/[^:]+:[0-9]+: *"data": "'`) but still scan
+  the looks' names and descriptions.
 - Commit only as `ArnavDotExe <146160723+ArnavDotExe@users.noreply.github.com>`. Set it in the
   local git config (`git config user.name` / `user.email`) on a new machine. Never use a personal
   email in commits or in requests to outside services.
@@ -94,6 +104,29 @@ on, because the shoulder runs off to infinity at white and wiped out near-white 
 balance and exposure are gains on that same scene scale: per Bradford cone for white balance, so
 white stays white. Neutral grays pass through unchanged between sRGB and the working space, so a
 bake's neutral ramp *is* Lightroom's tone curve.
+
+### Android app (`android/`)
+
+```bash
+cd android
+./gradlew :look:test                                   # JVM tests against colorlab's fixtures
+./gradlew :app:lintDebug :app:assembleDebug            # what CI also runs (.github/workflows/android.yml)
+python look/src/test/fixtures/make_conformance.py      # regenerate the fixtures (CI checks they're current)
+```
+
+- Gradle 9.8.2 (wrapper), AGP 9.5.0 (built-in Kotlin), Kotlin 2.4.21, compileSdk/targetSdk 37,
+  minSdk 29, Java 17 bytecode. `local.properties` (gitignored) holds `sdk.dir`.
+- On the original Windows machine the toolchain is portable, in `%LOCALAPPDATA%\EmulsionTools`:
+  JDK 21 (`jdk-21.0.13+9`, set `JAVA_HOME`), the SDK (`sdk`), Gradle 9.8.2. The user's path has a
+  space, so run `sdkmanager.bat` from PowerShell, not `cmd.exe`.
+- `:look` (plain Kotlin, JVM): `FsimReader` (strict `.fsim.json` v1, the twin of `fsim.loads`),
+  `Look`/`Section`, `Lut3D` (tetrahedral `lookup` identical to `lut.apply_lut`, `applyArgb`),
+  `LookLibrary` (sorted, unique names). Tests: `FsimConformanceTest`, `ShippedLooksTest`, `ArgbTest`.
+- `:app`: `FilmProcessor` (a CameraX `SurfaceProcessor` in a preview `CameraEffect`, the LUT as an
+  RGB16F 3D texture with the same tetrahedra in GLSL), `Capture.kt` (upright bitmap, LUT on all
+  cores, JPEG to `DCIM/Emulsion`), `MainActivity` (permission, look strip, shutter).
+- To bake the looks again, run colorlab's `fsim.from_preset` on every private preset, keeping the
+  names in `looks/private/ship_names.json` so a look keeps its name.
 
 ### Calibration loop (needs Lightroom; all output under `out/`)
 
@@ -272,7 +305,9 @@ Lightroom quirks:
     strength follows the black point (5th percentile of encoded luminance) ^ −0.57, Shadows'
     the mean linear luminance ^ 1.16, both 1 on the scene chart (`local_contrast.image_strength`):
     photo exports 2.14 -> 0.96, DNG presets against their previews median 2.60 -> 1.96.
-  - After that, the Android app.
+  - The Android app is started (see "Android app" above): the look's colour in the preview and
+    on captures, 57 bundled looks. Next: port vignette, grain and the local passes to the app
+    with conformance tests, run it on the Pixel, then the editor and camera recipes.
   - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own
     look names, no camera-maker trademarks).
 - Deferred by the user: Leica LUX.
