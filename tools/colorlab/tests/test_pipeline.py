@@ -1005,3 +1005,29 @@ def test_render_of_a_look_profile_itself_uses_its_table_amount():
                                      "RGBTableAmount": "0.5"}))
     x = grid(5)
     np.testing.assert_allclose(render(profile, x), np.full_like(x, 0.5), atol=1e-4)
+
+
+def test_colour_scene_scale_has_a_finite_top_above_its_knee():
+    # Saturation, vibrance, HSL and B&W work on the scene scale, but the exposure shoulder's stretch
+    # runs off to infinity at white; above COLOR_KNEE (encoded) the colour scale goes on linearly.
+    from colorlab.pipeline import COLOR_KNEE, WORKING_TRANSFER, _from_color_scene, _to_color_scene, _to_scene
+    below = RNG_UNIT.random((200, 3)) * COLOR_KNEE
+    np.testing.assert_allclose(_to_color_scene(below), _to_scene(below), rtol=1e-9)
+    enc = RNG_UNIT.random((500, 3))
+    np.testing.assert_allclose(_from_color_scene(_to_color_scene(enc)), enc, atol=1e-9)
+    ramp = np.linspace(0.0, 1.0, 2001)[:, None].repeat(3, axis=1)
+    scene = _to_color_scene(ramp)[:, 0]
+    assert np.all(np.diff(scene) > 0) and np.isfinite(scene[-1]) and scene[-1] < 2 * _to_scene(np.full((1, 3), COLOR_KNEE))[0, 0]
+    assert WORKING_TRANSFER is cs.Transfer.SRGB
+
+
+def test_saturation_keeps_a_near_white_tints_low_channel():
+    # Lightroom's Saturation +50 takes the ProPhoto tint (0.981, 0.996, 0.882) to (0.969, 1.0, 0.772);
+    # on the unbounded scene scale its blue fell to 0.
+    tint = cs.encode(np.array([[0.981, 0.996, 0.882]]), cs.Transfer.SRGB)
+    out = cs.decode(render(parse_preset(make_xmp({"Saturation": "+50"})), tint, space=cs.PROPHOTO_RGB), cs.Transfer.SRGB)
+    assert 0.6 < out[0, 2] < 0.85 and out[0, 1] > 0.95
+
+
+
+RNG_UNIT = np.random.default_rng(11)
