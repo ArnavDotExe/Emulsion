@@ -1617,6 +1617,57 @@ Applying the knee to every stage instead made Temperature −100 5.1 worse.
   (535 pass, 98%). The colour-stage tests' scene helper now models the knee independently
   (`color_scene`, `color_unscene`).
 
+## Positive saturation at PV 15.4 (`POSITIVE_SATURATION_SHOULDER`, `POSITIVE_SATURATION_PIVOT`)
+
+Journey: as a photographer whose PV 15.4 preset adds saturation, I want saturated colours to gain as
+much colour as Lightroom gives them, also beyond sRGB.
+
+After the colour scale's knee, positive Saturation was still the largest single-slider gap in the
+PV 15.4 colour bakes' ProPhoto exports: +15/+50/+100 0.52/0.95/1.37.
+
+### What the bakes showed
+
+- **Saturation depends on the process version.** Lightroom's own PV 11 and PV 15.4 Saturation
+  bakes (sRGB) differ by 0.33-0.48 mean ΔE (max 7.4) at -100/-50/+50/+100, so one fit can't serve both.
+- **The form is right.** Saturation in Rec.2020, Adobe RGB, P3 or sRGB primaries (1.08/1.62 at
+  +50/+100), per channel (1.63/2.16) or on log ratios (4.18/5.16) is worse. A free 3×3 matrix on
+  the scene scale is no better than ours on unclipped cells.
+- **The error is in saturated mid-bright colours.** Their effective boost is 1.1-1.16× ours
+  (dark saturated ones 0.93×). Lightroom drives their low channel to 0 where ours keeps 0.02-0.06,
+  and cells where Lightroom reaches a ProPhoto bound score 1.34 against 0.78 elsewhere (+50).
+  By hue, greens and oranges come out too weak, blues and purples slightly too strong.
+- **At -100, Lightroom's PV 15.4 gray** is 3-15% above our luminance of saturated mid-tones and
+  5-9% below it at the brightest, so the scale's shape differs too, not just the weights.
+
+### The change
+
+From PV 15.4, positive Saturation runs on the colour scene scale with a stronger shoulder
+(`POSITIVE_SATURATION_SHOULDER` 3.2 instead of the exposure's 5.55; knee kept) around its own
+luminance (`POSITIVE_SATURATION_PIVOT` (0.31, 0.71, -0.02)).
+
+It was fitted jointly over shoulder 2.5-5.55, knee 0.90-0.97 and pivot on the five PV 15.4
+Saturation bakes. Negative amounts preferred the existing shoulder and weights (-100 0.479 -> 0.458
+at best), so they stay.
+
+| ProPhoto, PV 15.4 | Before | After |
+|---|---|---|
+| Saturation +15 / +50 / +100 | 0.52 / 0.95 / 1.37 | 0.42 / 0.77 / 1.01 |
+| 14 bakes with positive Saturation (mean) | 1.008 | 0.864 (12 better, 1 worse) |
+| The same 14 in sRGB (mean) | 0.613 | 0.556 |
+
+- The one worse bake is the worst preset's colour part (0.67 -> 0.70).
+- The 10 private presets with positive Saturation: mean 1.122 -> 1.118 (3 better, 2 worse, at
+  most +0.11).
+- The worst preset: grid 2.92 -> 2.78, scene chart 1.81 (unchanged).
+- Applied to PV 11 as well, it improved PV 11's two positive bakes (0.414 -> 0.369) but worsened 6
+  of the 10 presets, so PV 11 keeps its calibration.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | PV 15.4 Saturation +50 drives a saturated green's low channel toward Lightroom's; PV 11 and negative amounts are unchanged; grays stay gray | `test_positive_saturation_at_pv_15_4_has_its_own_shoulder_and_pivot` | PASS |
+
+- RED `79e6aec` (the green's blue 0.035; Lightroom 0.002), GREEN `3f6de32` (blue 0.021; 536 pass, 98%).
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

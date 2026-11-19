@@ -220,8 +220,10 @@ Lightroom quirks:
     profile's `LookTable` hue/sat map (`adobe_table.HueSatMap`): 1.81. Measured from the
     decomposition bake in `out/decomp-luts`. The PV 15.4 colour bake (`out/brightsat-kit`, sRGB and
     ProPhoto exports) showed PV 15.4 HSL is right and gave the colour scale its knee: grid 3.31 ->
-    2.92. Left: positive Saturation beyond sRGB (ProPhoto +50 0.95, +100 1.36), Vibrance -100
-    1.45, bright yellows under that look; strong Highlights +
+    2.92. PV 15.4's positive Saturation has its own shoulder and pivot
+    (`pipeline.POSITIVE_SATURATION_SHOULDER` 3.2, `POSITIVE_SATURATION_PIVOT`): ProPhoto +50/+100
+    0.95/1.37 -> 0.77/1.01, grid 2.78. Left: Vibrance -100 1.45, bright yellows under that look;
+    strong Highlights +
     Clarity + Dehaze presets are 1.5–2.5. Looks whose profile carries Highlights/Shadows have
     baked LUTs that hold a Hald-specific version of that pass.
   - `finish.apply_settings` runs every spatial pass in a preset in Lightroom's order (NR,
@@ -229,7 +231,7 @@ Lightroom quirks:
     image (`finish.render_preset` orders them around the look as above).
 - Biggest single-slider gaps:
   - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
-  - Vibrance −100 1.5 and Saturation +100 0.6.
+  - Vibrance −100 1.5 and Saturation +100 0.6 (PV 11; PV 15.4 has its own positive Saturation).
   - Exposure ±2 is 0.8–0.9. Tone extremes are fixed: Blacks −100 0.39 and Whites −100 0.29 are the
     worst, from 2.6 and 2.3.
   - HSL is at most 0.67 (Lum Green −100), and B&W at most 0.46 (Mix Green +100).
