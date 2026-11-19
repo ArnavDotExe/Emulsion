@@ -1075,3 +1075,14 @@ def test_positive_saturation_at_pv_15_4_has_its_own_shoulder_and_pivot():
     from colorlab.pipeline import POSITIVE_SATURATION_PIVOT, POSITIVE_SATURATION_SHOULDER
     assert sum(POSITIVE_SATURATION_PIVOT) == pytest.approx(1.0) and 1 < POSITIVE_SATURATION_SHOULDER < 5.55
     np.testing.assert_allclose(saturation_vibrance(GRAYS, 80, process_version=(15, 4)), GRAYS, atol=1e-9)
+
+
+def test_negative_vibrance_darkens_a_colors_max_by_the_measured_strength():
+    # Lightroom's Vibrance -100 keeps a mid-saturated colour's scene max at 0.75 of its value where
+    # the full mid-saturation term would leave 0.69: the darkening is NEGATIVE_VIBRANCE_DARKEN of it.
+    from colorlab.pipeline import NEGATIVE_VIBRANCE_DARKEN, _vibrance
+    hi, lo = np.array([0.2]), np.array([0.1])  # K_SCENE units: s = 0.5, out of the deep shadows
+    new_lo, new_hi = _vibrance(lo, hi, np.array([2.0]), -1.0)
+    mid = 0.25 * (2 - 0.25)
+    np.testing.assert_allclose(new_hi, 0.2 * (1 - NEGATIVE_VIBRANCE_DARKEN * 0.8 * mid), rtol=1e-12)
+    assert 0.8 < NEGATIVE_VIBRANCE_DARKEN < 0.95
