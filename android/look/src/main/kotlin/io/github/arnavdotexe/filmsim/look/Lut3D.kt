@@ -50,6 +50,21 @@ class Lut3D(val size: Int, private val data: FloatArray) {
         out[2] = outB.toFloat()
     }
 
+    /**
+     * Apply the LUT in place to 8-bit ARGB pixels `[from, to)` (Android's `Bitmap` layout):
+     * each colour is looked up and rounded back to 8 bits; alpha is kept.
+     */
+    fun applyArgb(pixels: IntArray, from: Int = 0, to: Int = pixels.size) {
+        val out = FloatArray(3)
+        for (i in from until to) {
+            val p = pixels[i]
+            lookup(((p shr 16) and 255) / 255f, ((p shr 8) and 255) / 255f, (p and 255) / 255f, out)
+            pixels[i] = (p and -0x1000000) or (byte(out[0]) shl 16) or (byte(out[1]) shl 8) or byte(out[2])
+        }
+    }
+
+    private fun byte(v: Float): Int = Math.round(v.coerceIn(0f, 1f) * 255f)
+
     private fun at(idx: IntArray, channel: Int): Double =
         data[((idx[2] * size + idx[1]) * size + idx[0]) * 3 + channel].toDouble()
 
