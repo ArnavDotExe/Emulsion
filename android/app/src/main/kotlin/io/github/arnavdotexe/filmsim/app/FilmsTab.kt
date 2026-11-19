@@ -77,8 +77,8 @@ private fun renderThumb(scene: Bitmap, look: Look?): Bitmap {
 }
 
 /**
- * The films tab: every film as a card, previewed on a demo scene (landscape, portrait or still
- * life) and grouped by house. Tapping a card loads that film and returns to the camera.
+ * The films tab: every film as a card, previewed on a demo photo (landscape, portrait or
+ * street) and grouped by house. Tapping a card loads that film and returns to the camera.
  */
 @Composable
 fun FilmsTab(

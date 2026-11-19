@@ -2166,7 +2166,9 @@ invented houses, each previewed on a demo scene.
 | 0235a03 | RED | `FilmCatalog`, `FilmKind`, `exposureChip` unresolved |
 | fb8070f | GREEN | 12 tests: grain twins fold into their film, the exposure chip reads AUTO, the compensation or M |
 | f4e4ec3 | RED | `House`, `DemoScene`, `Film.house` unresolved (compile-time) |
-| (this commit) | GREEN | `./gradlew :app:testDebugUnitTest` 15 tests, 0 failures: every look has a house, no maker's trademark in any house title or tagline, three 3:4 PNG demo scenes under 700 KB; `:app:lintDebug` no issues |
+| 8e311ac | GREEN | `./gradlew :app:testDebugUnitTest` 15 tests, 0 failures: every look has a house, three 3:4 PNG demo scenes under 700 KB; `:app:lintDebug` no issues (the scenes were drawn procedurally) |
+| 6a1fb7d | RED | `DemoScenesTest` 2 of 3 fail: the third scene is still "Still life" and `CREDITS.md` doesn't exist |
+| (this commit) | GREEN | the scenes are three Pexels photos (landscape, portrait, street), cropped 3:4 to 360 x 480, credited in `assets/demo/CREDITS.md`; the drawing script is removed |
 
 1x was more zoomed than the stock app. The dump of both apps' live requests (`adb shell dumpsys
 media.camera`) matched on camera 0, zoom ratio 1.0 and crop region 0 0 4000 3000, and differed in
@@ -2176,8 +2178,7 @@ sweep): ours needed shrinking by 0.89 (correlation 0.74, zero shift), a pure 12%
 stabilisation off in the preview, capture and every request, the scale is 1.00 at zero shift
 (correlation 0.77).
 
-Not done: the unit tests don't cover the camera binding. The demo scenes are procedural, so the
-landscape and portrait look drawn rather than photographed.
+Not done: the unit tests don't cover the camera binding.
 
 ## Coverage and known gaps
 

@@ -14,11 +14,11 @@ enum class House(val title: String, val tagline: String) {
     RECIPES("Recipes", "Digital film recipes for street, portrait and landscape"),
 }
 
-/** The demo images a film is previewed on in the films tab (bundled, drawn by tools/demo_images). */
+/** The demo photos a film is previewed on in the films tab (bundled Pexels photos, see assets/demo/CREDITS.md). */
 enum class DemoScene(val title: String, val assetPath: String) {
     LANDSCAPE("Landscape", "demo/landscape.png"),
     PORTRAIT("Portrait", "demo/portrait.png"),
-    STILL_LIFE("Still life", "demo/still_life.png"),
+    STREET("Street", "demo/street.png"),
 }
 
 /**

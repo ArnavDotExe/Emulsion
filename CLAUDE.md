@@ -136,8 +136,10 @@ python look/src/test/fixtures/make_conformance.py      # regenerate the fixtures
   - The FILMS tab (`FilmsTab`, `FilmCatalog`) is a grid of cards grouped into *houses*: invented
     names for what a film evokes (Goldbox, Greenleaf, Argentum, Snapshot, Old Europe, Studio,
     Recipes), never a maker's trademark. Grain twins share a card. Cards are previewed on three
-    bundled demo scenes (`assets/demo/*.png`, drawn by `tools/demo_images/make_demo_images.py`,
-    our own artwork), each rendered through the look's LUT only while it is on screen.
+    bundled Pexels photos (`assets/demo/*.png`, Pexels License, credits in `assets/demo/CREDITS.md`,
+    cropped 3:4 and scaled to 360 x 480), each rendered through the look's LUT only while it is
+    on screen. The Pexels site blocks plain downloads (bot check): use the image CDN URL
+    (`images.pexels.com/photos/<id>/pexels-photo-<id>.jpeg`) and read pages with web fetch.
   - Electronic stabilisation must stay OFF (`ManualCamera.fullFieldOfView`, and in `apply`): on the
     Pixel it crops 12% off the field of view, so 1x looked zoomed against the stock app. Found by
     diffing `adb shell dumpsys media.camera` for both apps and checked by registering photos

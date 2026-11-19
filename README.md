@@ -8,7 +8,7 @@ with a color pipeline that is open, measurable and hackable.
 > **Status: early development.** The repo holds the Python *color lab* that defines and
 > tests the color science, and the first Android app: a camera with 43 bundled looks, a live
 > GPU preview of the selected look, manual controls (EV, ISO, shutter, focus, white balance), a
-> films tab that previews every film on demo scenes, and full-resolution captures saved to
+> films tab that previews every film on demo photos, and full-resolution captures saved to
 > `DCIM/Emulsion`. The camera screen mixes the layouts of
 > [PhotonCamera](https://github.com/eszdman/PhotonCamera) (GPL-3.0) and the Aperture camera.
 
@@ -20,7 +20,7 @@ with a color pipeline that is open, measurable and hackable.
 | [`docs/`](docs/) | Design notes and test evidence |
 | [`android/`](android/) | The Android app (Kotlin, Compose, CameraX, OpenGL ES 3) and its `:look` module, tested against the color lab |
 | [`android/app/src/main/assets/looks/`](android/app/src/main/assets/looks/) | The bundled looks, as `.fsim.json` files |
-| [`tools/demo_images/`](tools/demo_images/) | Draws the three demo scenes (landscape, portrait, still life) the films tab previews films on |
+| [`android/app/src/main/assets/demo/`](android/app/src/main/assets/demo/CREDITS.md) | Three Pexels photos (landscape, portrait, street) the films tab previews films on, with their credits |
 
 ## Roadmap
 
