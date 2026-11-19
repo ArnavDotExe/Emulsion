@@ -262,3 +262,19 @@ def test_load_preset_dir_is_recursive_sorted_and_resolved(tmp_path):
     presets = load_preset_dir(tmp_path)
     assert [p.source.name for p in presets] == ["profile.xmp", "user.xmp"]
     assert presets[1].look.resolved
+
+
+def test_load_preset_dir_resolves_builtin_looks_from_installed_profile_folders(tmp_path):
+    # An Adobe built-in look (not stubbed, no table in the preset) is defined by an installed
+    # profile with the same UUID; that folder is read only to resolve looks.
+    presets, profiles = tmp_path / "presets", tmp_path / "profiles" / "Vintage"
+    presets.mkdir(); profiles.mkdir(parents=True)
+    look = """<crs:Look><rdf:Description crs:Name="Vintage 05" crs:Amount="0.9" crs:UUID="981D">
+       <crs:Parameters crs:RGBTable="CD58" crs:RGBTableAmount="0.75"/></rdf:Description></crs:Look>"""
+    (presets / "User.xmp").write_text(make_xmp({"UUID": "USER"}, children=look), encoding="utf-8")
+    (profiles / "Vintage 05.xmp").write_text(
+        make_xmp({"PresetType": "Look", "UUID": "981D", "RGBTable": "T", "Table_T": table_text(0.75)}), encoding="utf-8")
+    assert not load_preset_dir(presets)[0].look.resolved
+    [user] = load_preset_dir(presets, profile_dirs=[tmp_path / "profiles", tmp_path / "missing"])
+    assert user.look.resolved and user.look.source.uuid == "981D"
+    assert user.look.table.lut.table[0, 0, 0, 0] == pytest.approx(0.75, abs=1e-4)
