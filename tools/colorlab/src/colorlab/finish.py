@@ -47,7 +47,7 @@ import numpy as np
 
 from .errors import ColorlabError, ParameterError
 from .film import gaussian_blur
-from .local_contrast import _YCC, _YCC_INV, clarity, dehaze, guided_filter, highlights_shadows, texture
+from .local_contrast import _YCC, _YCC_INV, clarity, dehaze, guided_filter, highlights_shadows, image_strength, texture
 from .pipeline import render
 from .preset import Preset
 
@@ -261,13 +261,14 @@ def _number(settings: Mapping[str, str], key: str, default: float = 0.0) -> floa
 
 def local_passes(encoded: np.ndarray, settings: Mapping[str, str]) -> np.ndarray:
     """The neighbourhood passes a preset names, in Lightroom's order: noise reduction,
-    Highlights/Shadows, Dehaze, Texture, Clarity and sharpening. Missing keys mean the default."""
+    Highlights/Shadows (at the image's own strength, :func:`~colorlab.local_contrast.image_strength`),
+    Dehaze, Texture, Clarity and sharpening. Missing keys mean the default."""
     def n(key: str, default: float = 0.0) -> float:
         return _number(settings, key, default)
 
     img = _image(encoded)
     img = noise_reduction(img, n("LuminanceSmoothing"), n("ColorNoiseReduction"))
-    img = highlights_shadows(img, n("Highlights2012"), n("Shadows2012"))
+    img = highlights_shadows(img, n("Highlights2012"), n("Shadows2012"), strength=image_strength(img))
     img = dehaze(img, n("Dehaze"))
     img = clarity(texture(img, n("Texture")), n("Clarity2012"))
     return sharpen(img, n("Sharpness"), n("SharpenRadius", 1.0), n("SharpenDetail", 25.0), n("SharpenEdgeMasking"))

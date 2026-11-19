@@ -39,6 +39,11 @@ gradient a few hundred px long, yet an edge gets no halo. Each slider has its ow
 sRGB-encoded values: luminance moves to the new value and each channel's difference from it is
 scaled by the square root of the luminance ratio.
 
+On real photos Lightroom applies a fraction of that chart-fitted change that depends on the
+image (:func:`image_strength`, measured on 15 photos): Highlights' falls as the black point
+rises, Shadows' rises with the mean brightness. ``finish`` passes it in; on the scene chart both
+are 1.
+
 Texture (:func:`texture`) is a guided filter of fixed 16 px radius on Y, Cb and Cr (guided by
 Y): it scales each channel's difference from its edge-preserving smooth. Its size doesn't
 follow the frame, so previews must render it at the output resolution to match.
@@ -280,10 +285,38 @@ def _bilinear(table: np.ndarray, p: np.ndarray, b: np.ndarray) -> np.ndarray:
             + fi * ((1 - fj) * table[i + 1, j] + fj * table[i + 1, j + 1]))
 
 
-def highlights_shadows(encoded: np.ndarray, highlights: float = 0.0, shadows: float = 0.0) -> np.ndarray:
-    """Lightroom-style Highlights and Shadows (each -100..100) on an sRGB-encoded H x W x 3 image."""
+#: per-image strength of Highlights / Shadows (fitted to 15 photos, anchored at the scene chart):
+#: Highlights scales as (black point / ref) ** exponent, Shadows as (mean luminance / ref) ** exponent
+HIGHLIGHTS_STRENGTH_REF, HIGHLIGHTS_STRENGTH_EXPONENT = 0.0304, -0.57
+SHADOWS_STRENGTH_REF, SHADOWS_STRENGTH_EXPONENT = 0.296, 1.16
+_BLACK_POINT_RANGE, _MEAN_RANGE = (0.02, 0.5), (0.02, 0.8)
+
+
+def image_strength(encoded: np.ndarray) -> tuple[float, float]:
+    """How much of the chart-fitted Highlights and Shadows change Lightroom applies to this image.
+
+    The black point is the 5th percentile of sRGB-encoded luminance, the brightness the mean
+    linear luminance. Both are clamped to the range the photos covered, so the strengths stay
+    in about 0.2-1.25 (Highlights) and 0.04-3.2 (Shadows).
+    """
+    img = np.clip(np.asarray(encoded, dtype=np.float64), 0.0, 1.0)
+    lum = decode(img, Transfer.SRGB) @ SRGB_LUMA
+    black = np.clip(np.percentile(encode(np.clip(lum, 0.0, 1.0), Transfer.SRGB), 5), *_BLACK_POINT_RANGE)
+    mean = np.clip(lum.mean(), *_MEAN_RANGE)
+    return (float((black / HIGHLIGHTS_STRENGTH_REF) ** HIGHLIGHTS_STRENGTH_EXPONENT),
+            float((mean / SHADOWS_STRENGTH_REF) ** SHADOWS_STRENGTH_EXPONENT))
+
+
+def highlights_shadows(encoded: np.ndarray, highlights: float = 0.0, shadows: float = 0.0,
+                       strength: tuple[float, float] = (1.0, 1.0)) -> np.ndarray:
+    """Lightroom-style Highlights and Shadows (each -100..100) on an sRGB-encoded H x W x 3 image.
+
+    ``strength`` scales each slider's change (Highlights, Shadows), as :func:`image_strength`
+    gives it for a photo; the default is the chart's."""
     amounts = {"highlights": _check("highlights", highlights, -100.0, 100.0),
                "shadows": _check("shadows", shadows, -100.0, 100.0)}
+    weights = {"highlights": _check("highlights strength", strength[0], 0.0, 10.0),
+               "shadows": _check("shadows strength", strength[1], 0.0, 10.0)}
     img = np.clip(np.asarray(encoded, dtype=np.float64), 0.0, 1.0)
     if not any(amounts.values()):
         return img
@@ -292,7 +325,8 @@ def highlights_shadows(encoded: np.ndarray, highlights: float = 0.0, shadows: fl
     pixel = (y + gaussian_blur(y, 1.0)) / 2.0
     base = gaussian_blur(y, local_tone_sigma(y.shape[1]))
     tables = _local_tone_tables()
-    delta = sum(_bilinear(_amount_table(tables[name], a), pixel, base) for name, a in amounts.items() if a)
+    delta = sum(weights[name] * _bilinear(_amount_table(tables[name], a), pixel, base)
+                for name, a in amounts.items() if a)
     old = encode(np.clip(lum, 0.0, 1.0), Transfer.SRGB)
     new = encode(np.clip(np.maximum(y + delta, 0.0) ** LUMA_GAMMA, 0.0, 1.0), Transfer.SRGB)
     scale = (new / np.maximum(old, 1e-6)) ** LOCAL_TONE_CARRY

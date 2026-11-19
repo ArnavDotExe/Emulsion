@@ -207,7 +207,8 @@ def test_render_preset_runs_the_look_then_the_spatial_passes_in_either_order():
     after = render_preset(preset, img, seed=2, local_first=False)
     np.testing.assert_allclose(after, apply_settings(render(preset, img), preset.settings, seed=2), atol=1e-6)
     before = render_preset(preset, img, seed=2, local_first=True)
-    local = sharpen(highlights_shadows(img, 0, 40), 40)
+    from colorlab.local_contrast import image_strength
+    local = sharpen(highlights_shadows(img, 0, 40, strength=image_strength(img)), 40)
     # the vignette goes with the local passes, before the look; grain stays last
     expected = lightroom_grain(render(preset, vignette(local, -30)), 20, seed=2)
     np.testing.assert_allclose(before, expected, atol=1e-6)
@@ -252,7 +253,8 @@ def test_render_preset_folds_in_the_look_profiles_highlights_and_shadows_before_
     assert "Sharpness" not in settings  # Lightroom ignores a look's sharpening
     assert spatial_settings(parse_preset(make_xmp({"Shadows2012": "+60"})))["Shadows2012"] == "+60"
     img = edge(96)
-    expected = render(preset, highlights_shadows(img, -15, 100))
+    from colorlab.local_contrast import image_strength
+    expected = render(preset, highlights_shadows(img, -15, 100, strength=image_strength(img)))
     np.testing.assert_allclose(render_preset(preset, img), expected, atol=1e-6)  # local passes first by default
 
 
