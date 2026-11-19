@@ -1413,6 +1413,45 @@ Commits:
   (508 pass, 98%).
 - Vignette before the look: RED `84e12d6`, GREEN `f26d4c9` (508 pass, 98%).
 
+## Built-in looks from Camera Raw's installed profiles (`preset.load_profiles`, `load_preset_dir(profile_dirs=...)`)
+
+Journey: as a photographer whose preset uses one of Lightroom's own creative profiles, I want
+Emulsion to apply that profile rather than silently drop it.
+
+- The worst whole preset (4.88 blurred against Lightroom's export, 1.62 on its baked LUT) uses
+  Adobe's built-in "Vintage 05" look at amount 0.9. The look isn't stubbed and has no table in
+  the preset, so we skipped it: 9.42 ΔE against the baked LUT on a 17³ grid, with grays much too
+  bright (0.5 came out at 0.545, Lightroom 0.459).
+- Camera Raw installs that profile as a Look `.xmp` under `Settings/Adobe/Profiles`, with the same
+  UUID. Resolving to it in place takes the preset to 3.87 on the grid and 2.62 against the export.
+  Nothing of Adobe's is copied into the repo; the profiles are read from the user's install.
+- `preset.load_profiles(dirs)` reads the Look profiles under the given folders (missing folders,
+  unreadable files and non-Look presets are skipped). `resolve_looks(presets, profiles)` uses them
+  after the preset folder's own looks. `load_preset_dir(root, profile_dirs=...)` and
+  `preset_check compare --profiles DIR` (repeatable) pass them through. The local install holds
+  397 Look profiles. Only this preset (`.xmp` and `.dng`) uses a built-in look.
+- Still open, waiting for a decomposition bake (`out/decomp-kit`: the look alone at amounts
+  100/90/50, the preset without its look, without HSL and without grading):
+  - The profile has `RGBTableAmount` 0.75, which we ignore. With the look's amount 0.9, the
+    grid scores 3.87 at table amount 0.9, 3.34 at 0.675 (0.9 × 0.75) and 3.13 at 0.75.
+  - The profile also has a `LookTable`: a DNG-style hue/saturation/value map (36 × 16 × 16
+    cells of hue shift in degrees, saturation scale and value scale, value outer and saturation
+    inner, linear value encoding). A scratch implementation from the DNG specification, applied
+    after the RGB table, only reaches 3.02, so the remaining gap is mostly elsewhere: reds,
+    magentas and warm tones, where this preset also pushes HSL to ±100. Grays match within 0.016.
+  - Moving the profile stage anywhere else in the pipeline is worse (5–10).
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | A built-in look resolves from a profile folder (same UUID), skipping broken files and non-Look presets; without the folder it stays unresolved | `test_load_preset_dir_resolves_builtin_looks_from_installed_profile_folders` | PASS |
+| 2 | `compare` resolves built-in looks from `profile_dirs` / `--profiles` | `test_compare_resolves_builtin_looks_from_profile_folders` | PASS |
+| 3 | Against the local Camera Raw install, every private preset's look resolves (private) | `test_builtin_look_resolves_from_the_installed_camera_raw_profiles` | PASS |
+
+- Profile folders: RED `72691a9` (`load_preset_dir()` got an unexpected keyword argument
+  `profile_dirs`), GREEN `a7477a5` (509 pass, 98%).
+- `compare --profiles`: RED `5a9c410` (`compare_exports()` got an unexpected keyword argument
+  `profile_dirs`), GREEN `a4df3c9` (510 pass, 98%).
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
