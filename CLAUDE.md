@@ -255,5 +255,5 @@ Lightroom quirks:
   - 9: the CLI.
   - After that, the Android app.
   - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own
-    look names, no Fujifilm trademarks).
+    look names, no camera-maker trademarks).
 - Deferred by the user: Leica LUX.
