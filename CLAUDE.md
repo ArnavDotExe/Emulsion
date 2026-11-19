@@ -42,6 +42,7 @@ engine tested against the Python reference).
 - **Before every push**, scan tracked files for pack and look names. Build the term list from the
   file names in `presets/private/` and `looks/private/`, for example
   `git grep -n -i -E "<pack>|<look>|..."`, and fix every hit. Don't write that list into any tracked file.
+  The look name "Portrait 400" matches one film-stock term by its prefix: an expected hit.
   The looks' base64 `"data"` lines match short terms by chance: drop those lines from the hits
   (`| grep -v -E '^android/app/src/main/assets/looks/[^:]+:[0-9]+: *"data": "'`) but still scan
   the looks' names and descriptions.
@@ -110,7 +111,8 @@ bake's neutral ramp *is* Lightroom's tone curve.
 ```bash
 cd android
 ./gradlew :look:test                                   # JVM tests against colorlab's fixtures
-./gradlew :app:lintDebug :app:assembleDebug            # what CI also runs (.github/workflows/android.yml)
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug   # what CI also runs (.github/workflows/android.yml)
+./gradlew :app:assemblePreview                         # R8-shrunk, debug-signed APK (~15 MB) to send to testers
 python look/src/test/fixtures/make_conformance.py      # regenerate the fixtures (CI checks they're current)
 ```
 
@@ -124,9 +126,23 @@ python look/src/test/fixtures/make_conformance.py      # regenerate the fixtures
   `LookLibrary` (sorted, unique names). Tests: `FsimConformanceTest`, `ShippedLooksTest`, `ArgbTest`.
 - `:app`: `FilmProcessor` (a CameraX `SurfaceProcessor` in a preview `CameraEffect`, the LUT as an
   RGB16F 3D texture with the same tetrahedra in GLSL), `Capture.kt` (upright bitmap, LUT on all
-  cores, JPEG to `DCIM/Emulsion`), `MainActivity` (permission, look strip, shutter).
+  cores, JPEG to `DCIM/Emulsion`), `MainActivity` (permission, look loading).
+  - The camera screen (`CameraScreen`, `CameraUi`) follows PhotonCamera's layout (GPL-3.0; layout
+    only, no code taken): a top bar (flash, timer, grid, level, PRO), the 3:4 viewfinder (tap to
+    focus, pinch zoom, lens pills), the manual panel, the looks picker, and the bottom bar (last photo
+    from `Gallery.kt`, shutter, flip). Preview and capture share one 3:4 `ViewPort`.
+  - `CameraControls` is the pure, unit-tested logic (`CameraControlsTest`): zoom, ISO and shutter
+    stops, labels, the level angle, the flash and timer cycles.
+  - `ManualCamera` uses Camera2 interop (AndroidX `@OptIn`, or lint fails) for live ISO/shutter
+    and manual ISO, shutter, focus and white balance. With auto-exposure off the Pixel's auto
+    white balance drifts strongly cyan, so manual exposure holds the last automatic gains and
+    colour matrix.
 - To bake the looks again, run colorlab's `fsim.from_preset` on every private preset, keeping the
-  names in `looks/private/ship_names.json` so a look keeps its name.
+  names in `looks/private/ship_names.json` (a private name table) so a look keeps its name. Mobile
+  `.dng` copies identical to an `.xmp` are skipped.
+- On the device: `adb` is `%LOCALAPPDATA%\EmulsionTools\sdk\platform-toolsdb.exe`; in Git Bash
+  prefix `/sdcard` paths with `MSYS_NO_PATHCONV=1`. Check colour by decoding screenshots and pulled
+  JPEGs (PowerShell System.Drawing; the venv has no PIL) against colorlab's ΔE2000.
 
 ### Calibration loop (needs Lightroom; all output under `out/`)
 
@@ -305,9 +321,11 @@ Lightroom quirks:
     strength follows the black point (5th percentile of encoded luminance) ^ −0.57, Shadows'
     the mean linear luminance ^ 1.16, both 1 on the scene chart (`local_contrast.image_strength`):
     photo exports 2.14 -> 0.96, DNG presets against their previews median 2.60 -> 1.96.
-  - The Android app is started (see "Android app" above): the look's colour in the preview and
-    on captures, 57 bundled looks. Next: port vignette, grain and the local passes to the app
-    with conformance tests, run it on the Pixel, then the editor and camera recipes.
+  - The Android app runs on the Pixel 11 (see "Android app" above): 43 bundled looks, the
+    look's colour in the preview and on captures (both within 0.2 of colorlab per channel), a
+    PhotonCamera-style camera screen with manual controls. Next: port vignette, grain and the
+    local passes to the app with conformance tests, then the editor and camera recipes; later
+    "enhanced processing" (burst merge, night mode; PhotonCamera's GPL code may be reused with credit).
   - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own
     look names, no camera-maker trademarks).
 - Deferred by the user: Leica LUX.

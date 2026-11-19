@@ -6,8 +6,10 @@ Android photographers analog-style looks, film simulations and filters,
 with a color pipeline that is open, measurable and hackable.
 
 > **Status: early development.** The repo holds the Python *color lab* that defines and
-> tests the color science, and the first Android app: a camera with 57 bundled looks, a live
-> GPU preview of the selected look and full-resolution captures saved to `DCIM/Emulsion`.
+> tests the color science, and the first Android app: a camera with 43 bundled looks, a live
+> GPU preview of the selected look, manual controls (EV, ISO, shutter, focus, white balance) and
+> full-resolution captures saved to `DCIM/Emulsion`. The camera screen's layout follows
+> [PhotonCamera](https://github.com/eszdman/PhotonCamera) (GPL-3.0), an open-source Android camera.
 
 ## What's here
 
@@ -33,7 +35,8 @@ with a color pipeline that is open, measurable and hackable.
 ## Looks and presets
 
 The bundled looks are baked by the color lab into Emulsion's own `.fsim.json` format and carry
-names of our own. Raw preset files are never committed: put Lightroom presets you own in
+names of our own that say what they evoke (Portrait 400, Slide 200, Cine 500T, Fine Mono 100,
+Chrome 64, Instant Muted, ...), without any maker's trademarks. Raw preset files are never committed: put Lightroom presets you own in
 `presets/private/`. That folder, `looks/private/` and `samples/` are gitignored.
 
 ## Build the app

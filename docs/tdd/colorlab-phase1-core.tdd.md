@@ -2103,7 +2103,7 @@ that colorlab rejects. CI regenerates the fixtures and fails if they differ from
 |---|---|---|
 | a9777db | RED | `./gradlew :look:test`: compile errors, `FsimReader`, `Section`, `FsimFormatException`, `Lut3D` unresolved |
 | fd22338 | GREEN | 5 tests, 0 failures: the reference look's settings and defaults, all 21 invalid files and text over 8 MiB rejected, lookup within 2e-6 of colorlab on 248 colours |
-| 7236329 | RED | `LookSource`, `LookLibrary` unresolved; the 57 bundled looks added |
+| 7236329 | RED | `LookSource`, `LookLibrary` unresolved; the 57 bundled looks added (43 since 2687029) |
 | d0bb20f | GREEN | 8 tests: every bundled look parses as a 33-point LUT under its slug file name with author, licence and description; the library sorts, finds by name, rejects bad files and repeated names |
 | 2eb832e | RED | `Lut3D.applyArgb` unresolved |
 | 8a880bd | GREEN | 11 tests: `applyArgb` equals the rounded lookup on 4096 pixels with alpha kept, touches only its range, identity changes nothing |
@@ -2115,9 +2115,45 @@ description made from the LUT (contrast, faded blacks, colour, grain, vignette).
 on Adobe's installed profile looks are left out. The name map stays in `looks/private/`.
 
 The preview renders the LUT on the GPU with the same tetrahedra as `Lut3D.lookup`, and captures
-run `Lut3D.applyArgb` at full resolution, so they share the tested lookup. Not yet checked: the app
-on a device (orientation, the preview's colour against the capture), and the spatial passes, which
+run `Lut3D.applyArgb` at full resolution, so they share the tested lookup. The spatial passes
 aren't ported yet.
+
+### On the Pixel 11: colour, framing, renamed looks and the camera screen
+
+Checked over adb on a Pixel 11 (Android 17) with the `preview` build type (4b09e36: R8-shrunk,
+debug-signed, 14.7 MB against the 50 MB debug APK), by decoding screenshots and pulled JPEGs:
+
+- Launch, orientation: no crash; preview and photos upright, photos 3000×4000.
+- Capture colour: colorlab's lookup of a look applied to a photo taken with no look gives mean RGB
+  144.6/132.1/115.0; the phone's photo with that look is 144.8/132.2/115.2. Its darkest pixels
+  equal the LUT's black. Two separate shots differ by mean ΔE 0.97 (the scene, not the look).
+- Preview colour: the GPU preview predicted from a no-look screenshot 123.2/119.0/104.2, measured
+  123.3/119.0/104.2.
+- Tap to saved file: 3.3 s.
+- Framing (4ae3854): the preview filled the 20:9 screen, cropping the 4:3 frame, so photos showed
+  much more than the preview. Preview and capture now share one 3:4 `ViewPort` and the preview
+  sits in a 3:4 box; checked to match on the device.
+
+Renamed looks (2687029): names now say what a look evokes without trademarks, and the 14 mobile
+recipe copies, exact duplicates of their `.xmp` (LUT ΔE 0.00, same spatial settings), are dropped:
+57 → 43 looks. `ShippedLooksTest` requires at least 40.
+
+The camera screen follows PhotonCamera's layout (GPL-3.0; layout only, no code taken). Its pure
+logic is unit-tested in `:app` (`./gradlew :app:testDebugUnitTest`, now in CI):
+
+| Commit | Stage | Evidence |
+|---|---|---|
+| 507d053 | RED | `CameraControls`, `Flash`, `Timer` unresolved |
+| 7ca523f | GREEN | 7 tests: zoom pills follow the lenses in range, ISO and shutter dials use full stops in the sensor's range, shutter (1/125, 2.5s) and EV (+1.0, −0.7) labels, the level angle from gravity, the flash and timer cycles |
+| 87e6733 | feat | Top bar, viewfinder overlays, zoom, manual panel, looks picker, bottom bar; `:app:lintDebug` no issues |
+
+On the device every control works and captures update the thumbnail. Manual ISO first turned the
+preview and photos cyan: with auto-exposure off the Pixel's automatic white balance drifts. Manual
+exposure now holds the gains and colour matrix last chosen automatically. Wall patch: auto 190/189/181,
+ISO 400 207/206/196 (brighter, same balance); at 2x the statue, wall and table keep their R/G and
+B/G ratios (statue 0.88/1.09 manual against 0.85/1.08 auto); a photo at ISO 400 keeps the wall
+at 202/201/191.
+
 
 ## Coverage and known gaps
 
