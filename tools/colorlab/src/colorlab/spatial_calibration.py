@@ -15,6 +15,11 @@ and the export is compared, pixel by pixel, with the chart's identity export:
   and a color-noise patch for noise reduction.
 * ``checker``: a fine checker of four grays, so every gray sits at every distance from
   the centre (the vignette's radial profile and its highlight protection).
+* ``flats``: 24 large flat patches (12 grays, 6 bright saturated and 6 other colours), for
+  what happens inside flat areas (Dehaze, Clarity) and to bright saturated colours (Highlights +).
+
+The follow-up kit (``kit --followup``) adds pairs of sliders, Sharpening Masking,
+Highlights/Shadows at PV 15.4 and, with ``--photos``, Highlights/Shadows on real photos.
 
 Every chart image carries its variant's settings as an embedded Lightroom sidecar,
 which Lightroom applies on import. The manifest records each chart's regions.
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from collections.abc import Mapping, Sequence
@@ -35,13 +41,14 @@ from .bake import make_sidecar_xmp, read_rgb_tiff, write_rgb_tiff16
 from .calibration import Variant, variant_xmp
 from .errors import ColorlabError
 
-__all__ = ["CHARTS", "SCALE_SIZES", "SCALE_VARIANTS", "SIZE", "SPATIAL_GROUP", "SPATIAL_VARIANTS", "SpatialVariant",
-           "charts", "collect_spatial", "main", "read_rgb_tiff", "write_spatial_kit"]
+__all__ = ["CHARTS", "FOLLOWUP_VARIANTS", "SCALE_SIZES", "SCALE_VARIANTS", "SIZE", "SPATIAL_GROUP",
+           "SPATIAL_VARIANTS", "SpatialVariant", "charts", "collect_spatial", "main", "photo_variants",
+           "read_rgb_tiff", "write_spatial_kit"]
 
 SPATIAL_GROUP = "FilmSim Spatial Calibration"
 SIZE = (1024, 1536)  # height, width: a 3:2 frame like a photo
 SCALE_SIZES = ((512, 768), (2048, 3072))  # the image-size test: half and double the frame
-CHARTS = ("scene", "levels", "checker")
+CHARTS = ("scene", "levels", "checker", "flats")
 
 #: an export whose 99.9th-percentile difference from its chart is below this had no preset applied
 UNCHANGED_TOLERANCE = 2e-3
@@ -125,11 +132,33 @@ def _checker(size: tuple[int, int]) -> tuple[np.ndarray, dict]:
     return img, {"checker": _region("checker", (0, h, 0, w), cell=cell, levels=list(levels))}
 
 
+def _flats(size: tuple[int, int]) -> tuple[np.ndarray, dict]:
+    h, w = size
+    img = np.zeros((h, w, 3))
+    regions: dict[str, dict] = {}
+    pw, ph = w // 6, h // 4
+    grays = np.linspace(0.02, 0.98, 12)
+    colors = ((0.95, 0.9, 0.15), (0.95, 0.2, 0.85), (0.15, 0.9, 0.95), (0.95, 0.2, 0.15), (0.2, 0.9, 0.2),
+              (0.2, 0.35, 0.95), (0.98, 0.85, 0.7), (0.95, 0.6, 0.2), (0.6, 0.4, 0.3), (0.3, 0.4, 0.55),
+              (0.5, 0.55, 0.35), (0.85, 0.95, 0.6))
+    for i in range(24):
+        y0, x0 = (i // 6) * ph, (i % 6) * pw
+        box = (y0, y0 + ph, x0, x0 + pw)
+        if i < 12:
+            img[y0:y0 + ph, x0:x0 + pw] = grays[i]
+            regions[f"flat {grays[i]:.2f}"] = _region("flat", box, value=[float(grays[i])] * 3)
+        else:
+            c = colors[i - 12]
+            img[y0:y0 + ph, x0:x0 + pw] = c
+            regions[f"color {i - 12:02d}"] = _region("color", box, value=list(c))
+    return img, regions
+
+
 def charts(size: tuple[int, int] = SIZE) -> tuple[dict[str, np.ndarray], dict[str, dict]]:
-    """The three charts (sRGB-encoded 0-1 images of ``size``, default ``SIZE``) and each chart's
+    """The charts (sRGB-encoded 0-1 images of ``size``, default ``SIZE``) and each chart's
     named regions. At other sizes every feature scales with the frame width, like a resized photo."""
     size = (int(size[0]), int(size[1]))
-    built = {"scene": _scene(size), "levels": _levels(size), "checker": _checker(size)}
+    built = {"scene": _scene(size), "levels": _levels(size), "checker": _checker(size), "flats": _flats(size)}
     return {k: v[0] for k, v in built.items()}, {k: v[1] for k, v in built.items()}
 
 
@@ -168,7 +197,7 @@ def _v(name: str, chart: str, *settings: Mapping[str, str]) -> SpatialVariant:
 
 
 def _build() -> tuple[SpatialVariant, ...]:
-    out = [_v(f"Identity {c.capitalize()}", c) for c in CHARTS]
+    out = [_v(f"Identity {c.capitalize()}", c) for c in ("scene", "levels", "checker")]  # flats: follow-up kit
     signed = (-100, -50, -25, 25, 50, 100)
     for label, key in (("Highlights", "Highlights2012"), ("Shadows", "Shadows2012"), ("Clarity", "Clarity2012"),
                        ("Texture", "Texture"), ("Dehaze", "Dehaze")):
@@ -198,6 +227,48 @@ def _build() -> tuple[SpatialVariant, ...]:
 
 
 SPATIAL_VARIANTS: tuple[SpatialVariant, ...] = _build()
+
+_PV15 = {"ProcessVersion": "15.4"}
+_KEYS = {"Highlights": "Highlights2012", "Shadows": "Shadows2012", "Clarity": "Clarity2012", "Dehaze": "Dehaze"}
+
+
+def _build_followup() -> tuple[SpatialVariant, ...]:
+    out = [_v("Identity Flats", "flats"), _v("Identity Scene PV15", "scene", _PV15)]
+    for label, amounts in (("Dehaze", (-100, -50, 50, 100)), ("Clarity", (50, 100)), ("Highlights", (50, 100))):
+        out += [_v(f"Flats {label} {a:+g}", "flats", {_KEYS[label]: f"{a:+g}"}) for a in amounts]
+    for (k1, a1), (k2, a2) in ((("Highlights", 50), ("Clarity", 50)), (("Highlights", 50), ("Dehaze", 50)),
+                               (("Highlights", -35), ("Shadows", 30)), (("Highlights", -50), ("Shadows", 50))):
+        out.append(_v(f"{k1} {a1:+g} {k2} {a2:+g}", "scene", {_KEYS[k1]: f"{a1:+g}", _KEYS[k2]: f"{a2:+g}"}))
+    out += [_v(f"Sharpen 50 Masking {m}", "scene", _SHARPEN, {"Sharpness": "50", "SharpenEdgeMasking": str(m)})
+            for m in (25, 100)]
+    for label in ("Highlights", "Shadows"):
+        out += [_v(f"PV15 {label} {a:+g}", "scene", _PV15, {_KEYS[label]: f"{a:+g}"})
+                for a in (-100, -50, -25, 25, 50, 100)]
+    return tuple(out)
+
+
+#: the follow-up kit: slider pairs, Sharpening Masking, PV 15.4 local tone and the flats chart
+FOLLOWUP_VARIANTS: tuple[SpatialVariant, ...] = _build_followup()
+
+_PHOTO_NAME = re.compile(r"[A-Za-z0-9]+")
+
+
+def photo_variants(name: str, size: tuple[int, int]) -> list[SpatialVariant]:
+    """Highlights/Shadows at PV 15.4 on the photo ``name`` (``size`` = its height, width), plus
+    its identity: they show whether Lightroom adapts these sliders to the image."""
+    if not _PHOTO_NAME.fullmatch(name):
+        raise ValueError(f"photo name must be letters and digits, got {name!r}")
+    size = (int(size[0]), int(size[1]))
+    chart = f"photo {name}"
+    moves: list[tuple[str, dict[str, str]]] = [("Identity", {})]
+    moves += [(f"Highlights {a:+g}", {"Highlights2012": f"{a:+g}"}) for a in (-100, -50, -25, 50, 100)]
+    moves += [(f"Shadows {a:+g}", {"Shadows2012": f"{a:+g}"}) for a in (-50, 25, 50, 100)]
+    moves.append(("Highlights -35 Shadows +30", {"Highlights2012": "-35", "Shadows2012": "+30"}))
+    out = []
+    for label, settings in moves:
+        v = _v(f"Photo {name} {label}", chart, _PV15, settings)
+        out.append(SpatialVariant(v.name, chart, v.settings, size))
+    return out
 
 _SCALE_EFFECTS = ("Identity Scene", "Identity Levels", "Identity Checker", "Shadows +50", "Clarity +50",
                   "Clarity -50", "Texture +50", "Dehaze +50", "Sharpen 50", "Grain 50", "Vignette -50")
@@ -254,8 +325,24 @@ def _chart_key(chart: str, size: tuple[int, int]) -> str:
     return chart if tuple(size) == SIZE else f"{chart} {size[1]}x{size[0]}"
 
 
-def write_spatial_kit(out_dir: str | Path, variants: Sequence[SpatialVariant] = SPATIAL_VARIANTS) -> list[Path]:
-    """Write a chart image (with its settings embedded) and a preset per variant, plus the manifest."""
+def _photo_name(v: SpatialVariant) -> str | None:
+    return v.chart[len("photo "):] if v.chart.startswith("photo ") else None
+
+
+def write_spatial_kit(out_dir: str | Path, variants: Sequence[SpatialVariant] = SPATIAL_VARIANTS,
+                      photos: Mapping[str, np.ndarray] | None = None) -> list[Path]:
+    """Write a chart image (with its settings embedded) and a preset per variant, plus the manifest.
+    A variant on a ``"photo <name>"`` chart uses ``photos[name]`` (0-1 RGB at the variant's size)."""
+    photos = dict(photos or {})
+    for v in variants:
+        name = _photo_name(v)
+        if name is None:
+            continue
+        if name not in photos:
+            raise ColorlabError(f"{v.name}: no photo for chart {v.chart!r}")
+        shape = np.shape(photos[name])
+        if tuple(shape[:2]) != tuple(v.size):
+            raise ColorlabError(f"{v.name}: the photo is {shape[1]}x{shape[0]}, the variant expects {v.size[1]}x{v.size[0]}")
     out = Path(out_dir)
     if out.exists() and any(out.iterdir()):
         raise FileExistsError(f"{out} is not empty; choose a new folder for the spatial calibration kit")
@@ -264,14 +351,16 @@ def write_spatial_kit(out_dir: str | Path, variants: Sequence[SpatialVariant] = 
     (out / "presets").mkdir(parents=True, exist_ok=True)
     paths = []
     for v in variants:
-        if v.size not in built:
+        photo = _photo_name(v)
+        if photo is None and v.size not in built:
             built[v.size] = charts(v.size)
             for chart, regs in built[v.size][1].items():
                 chart_regions[_chart_key(chart, v.size)] = regs
         xmp = variant_xmp(Variant(v.name, v.settings), group=SPATIAL_GROUP)
         (out / "presets" / f"{v.name}.xmp").write_text(xmp, encoding="utf-8")
         path = out / "images" / f"{v.name}.tif"
-        write_rgb_tiff16(path, built[v.size][0][v.chart], xmp=make_sidecar_xmp(xmp))
+        image = photos[photo] if photo is not None else built[v.size][0][v.chart]
+        write_rgb_tiff16(path, image, xmp=make_sidecar_xmp(xmp))
         paths.append(path)
     manifest = {
         "version": 1,
@@ -335,6 +424,10 @@ def main(argv: list[str] | None = None) -> int:
     kit.add_argument("out_dir", type=Path)
     kit.add_argument("--scale-test", action="store_true",
                      help="write the image-size test instead: a few effects at half and double the frame")
+    kit.add_argument("--followup", action="store_true",
+                     help="write the follow-up kit instead: slider pairs, masking, PV 15.4 local tone, flats")
+    kit.add_argument("--photos", type=Path, metavar="DIR",
+                     help="also add Highlights/Shadows variants on every 8/16-bit RGB TIFF in DIR (name = file stem)")
     col = sub.add_parser("collect", help="check Lightroom's exports and copy them next to the manifest")
     col.add_argument("export_dir", type=Path)
     col.add_argument("kit_dir", type=Path)
@@ -342,7 +435,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "kit":
-            paths = write_spatial_kit(args.out_dir, SCALE_VARIANTS if args.scale_test else SPATIAL_VARIANTS)
+            variants = list(SCALE_VARIANTS if args.scale_test else FOLLOWUP_VARIANTS if args.followup
+                            else SPATIAL_VARIANTS)
+            photos = {}
+            if args.photos is not None:
+                for path in sorted(args.photos.glob("*.tif*")):
+                    photos[path.stem] = read_rgb_tiff(path)
+                    variants += photo_variants(path.stem, photos[path.stem].shape[:2])
+            paths = write_spatial_kit(args.out_dir, variants, photos)
             print(f"wrote {len(paths)} spatial calibration image(s) and preset(s) to {args.out_dir}; "
                   "see README.txt there")
         else:
@@ -353,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  missing: {name}")
             for name in report.unchanged:
                 print(f"  unchanged (settings not applied): {name}")
-    except (ColorlabError, FileExistsError, OSError) as exc:
+    except (ColorlabError, FileExistsError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0

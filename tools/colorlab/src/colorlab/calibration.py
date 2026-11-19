@@ -93,6 +93,7 @@ def _build() -> tuple[Variant, ...]:
         out.append(Variant(f"Cal Curve {name}", custom, {**curves, key: pts}))
     out += _process_version_15_4()
     out += _process_version_15_4_color()
+    out += _followups()
     for band in BANDS:
         b = band.capitalize()
         out += _sweep(f"HSL Hue {b}", f"HueAdjustment{b}", (-100, 100), ("K_SCENE",))
@@ -164,6 +165,23 @@ def _process_version_15_4_color() -> list[Variant]:
     out.append(Variant("Cal PV15 Color Saturation +50 Vibrance +50", {**pv, "Saturation": "+50", "Vibrance": "+50"}))
     out.append(Variant("Cal PV15 Color Saturation +100 Hue Yellow -100 Sat Yellow -50",
                        {**pv, "Saturation": "+100", "HueAdjustmentYellow": "-100", "SaturationAdjustmentYellow": "-50"}))
+    return out
+
+
+def _followups() -> list[Variant]:
+    """Checks for the gaps left after the first rounds: Whites + at PV 15.4 between 0 and +100,
+    the B&W mixer at PV 15.4 (its own hue table), and Saturation - with Vibrance - at both process
+    versions. They set two or more keys, so they fit nothing and stay out of the measured shapes."""
+    pv = {"ProcessVersion": "15.4"}
+    out = _sweep("PV15 Whites", "Whites2012", (25, 50), extra=pv)
+    mixer = {**pv, "ConvertToGrayscale": "True", **{f"GrayMixer{b.capitalize()}": "0" for b in BANDS}}
+    out.append(Variant("Cal PV15 BW Neutral Mix", mixer))
+    out += [Variant(f"Cal PV15 BW Mix {b.capitalize()} +100", {**mixer, f"GrayMixer{b.capitalize()}": "+100"})
+            for b in BANDS]
+    for prefix, extra in (("Cal SatVib", {}), ("Cal PV15 SatVib", pv)):
+        for sat, vib in ((-50, -50), (-100, -50), (-50, -100), (-25, -50)):
+            out.append(Variant(f"{prefix} Saturation {sat:+d} Vibrance {vib:+d}",
+                               {**extra, "Saturation": f"{sat:+d}", "Vibrance": f"{vib:+d}"}))
     return out
 
 
@@ -492,8 +510,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     pre = sub.add_parser("presets", help="write the single-slider calibration presets")
     pre.add_argument("out_dir", type=Path)
-    pre.add_argument("--only-missing", type=Path, metavar="LUT_DIR",
-                     help="only write variants that have no .cube in LUT_DIR yet (to re-bake failures)")
+    pre.add_argument("--only-missing", type=Path, metavar="LUT_DIR", action="append",
+                     help="only write variants that have no .cube in LUT_DIR yet (repeatable: in none of them)")
     fp = sub.add_parser("fit", help="fit the pipeline strengths to collected calibration bakes")
     fp.add_argument("lut_dir", type=Path)
     fp.add_argument("--grid", type=int, default=17, help="sample grid size per axis (default 17)")
@@ -516,7 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "presets":
             variants = VARIANTS
             if args.only_missing is not None:
-                variants = [v for v in VARIANTS if not (args.only_missing / f"{v.name}.cube").is_file()]
+                variants = [v for v in VARIANTS
+                            if not any((d / f"{v.name}.cube").is_file() for d in args.only_missing)]
             paths = write_calibration_presets(args.out_dir, variants)
             print(f"wrote {len(paths)} calibration preset(s) to {args.out_dir}; "
                   f"next: python -m colorlab.bake kit {args.out_dir} <kit folder>")

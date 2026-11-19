@@ -85,8 +85,10 @@ def test_variant_names_are_unique_and_filename_safe():
 
 
 def test_every_chart_has_an_identity_baseline():
+    from colorlab.spatial_calibration import FOLLOWUP_VARIANTS
+    every = {**BY_NAME, **{v.name: v for v in FOLLOWUP_VARIANTS}}  # the flats baseline is in the follow-up kit
     for chart in CHARTS:
-        v = BY_NAME[f"Spatial Identity {chart.capitalize()}"]
+        v = every[f"Spatial Identity {chart.capitalize()}"]
         assert v.chart == chart
         assert all(float(val) == 0 for k, val in v.settings.items() if k in ("Sharpness", "GrainAmount",
                    "PostCropVignetteAmount", "LuminanceSmoothing", "ColorNoiseReduction"))
