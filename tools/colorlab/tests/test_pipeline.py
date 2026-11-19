@@ -1059,3 +1059,19 @@ def test_saturation_keeps_a_near_white_tints_low_channel():
 
 
 RNG_UNIT = np.random.default_rng(11)
+
+
+def test_positive_saturation_at_pv_15_4_has_its_own_shoulder_and_pivot():
+    # Lightroom's PV 15.4 Saturation +50 takes the ProPhoto green (0.352, 0.666, 0.229) to
+    # (0.199, 0.699, 0.002): stronger than PV 11's for saturated mid-bright colours.
+    green = cs.encode(np.array([[0.352, 0.666, 0.229]]), cs.Transfer.SRGB)
+    def run(pv, amount="+50"):
+        preset = parse_preset(make_xmp({"Saturation": amount, "ProcessVersion": pv}))
+        return cs.decode(render(preset, green, space=cs.PROPHOTO_RGB), cs.Transfer.SRGB)[0]
+    new = run("15.4")
+    assert new[2] < 0.025 and new[0] < 0.215 and new[1] > 0.68
+    np.testing.assert_allclose(run("11.0"), cs.decode(saturation_vibrance(green, 50), cs.Transfer.SRGB)[0], atol=1e-12)
+    np.testing.assert_allclose(run("15.4", "-50"), run("11.0", "-50"), atol=1e-12)  # negative amounts unchanged
+    from colorlab.pipeline import POSITIVE_SATURATION_PIVOT, POSITIVE_SATURATION_SHOULDER
+    assert sum(POSITIVE_SATURATION_PIVOT) == pytest.approx(1.0) and 1 < POSITIVE_SATURATION_SHOULDER < 5.55
+    np.testing.assert_allclose(saturation_vibrance(GRAYS, 80, process_version=(15, 4)), GRAYS, atol=1e-9)
