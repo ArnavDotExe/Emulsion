@@ -78,7 +78,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `film` | Halation (scatter + bounces, scene-anchored highlight boost) and particle grain, sized in µm on the film; ported from spektrafilm and darktable (credited in the header); `apply` CLI for TIFFs |
 | `local_contrast` | Highlights/Shadows (a tone table over the pixel and a Gaussian base of width/32, per amount, in `data/local_tone.json`, scaled per image by `image_strength`: black point and mean brightness), Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr) and Dehaze (a monotone local tone table and a linear-light color gain, mixed for positive amounts with a dark channel prior), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
-| `finish` | Vignette (measured mask profile plus a value × weight table per amount; midpoint, feather, roundness, styles, highlights), sharpening (clamped unsharp mask on luma, fixed in pixels), noise reduction (guided filter on Y, Gaussian on CbCr), Lightroom-statistic grain (seeded `G_s − b G_2s` noise, frame-relative size), all in `data/finish.json`; `apply_settings` runs every spatial pass a preset names in Lightroom's order; `render_preset` runs local passes and vignette before the look, grain after, with the look profile's Highlights/Shadows folded in (`spatial_settings`); `apply` CLI |
+| `finish` | Vignette (measured mask profile plus a value × weight table per amount; midpoint, feather, roundness, styles, highlights), sharpening (clamped unsharp mask on luma, fixed in pixels, with an edge-gradient Masking), noise reduction (guided filter on Y, Gaussian on CbCr), Lightroom-statistic grain (seeded `G_s − b G_2s` noise, frame-relative size), all in `data/finish.json`; `apply_settings` runs every spatial pass a preset names in Lightroom's order; `render_preset` runs local passes and vignette before the look, grain after, with the look profile's Highlights/Shadows folded in (`spatial_settings`); `apply` CLI |
 | `preset_check` | Whole-preset check: `kit` writes full preset copies (geometry neutralized) on the scene chart as embedded sidecars; `compare` scores Lightroom's exports against `finish.render_preset` (global, spatial passes after or before the look, blurred, and on Lightroom's baked LUTs), saving its JSON per preset and resuming from it |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 | `fsim` | The `.fsim.json` look format (v1): a look's global colour as a base64 uint16 3D LUT (`.cube` order) plus its local, vignette and grain settings in Lightroom slider units; `from_preset`, strict `loads`/`read` (rejects unknown keys, ranges, versions, bad LUT data, over 8 MiB), `apply` (local passes, vignette, LUT, grain); `from-preset`/`apply` CLI |
@@ -203,7 +203,7 @@ Lightroom quirks:
     - Vignette: ±25–100 0.07–0.21 (to 13.9); Midpoint 0 0.47, Feather 0 0.57, roundness ±100 0.16,
       Paint Overlay 0.32. It holds at 768 and 3072 px.
     - Sharpening: 25/50/100 0.03/0.06/0.11 (to 0.49), Radius 3 0.10, Detail 100 0.17. It is fixed
-      in pixels; Masking isn't modelled.
+      in pixels; Masking 100 0.07 (an edge mask on the 1 px blurred luma gradient, blended as (m/100)^4).
     - Noise reduction: Luminance 0.16–0.30 (to 1.02), Color 0.52 (1.6). Color is at its floor:
       Lightroom's leftover chroma is mostly incoherent with the input, and even its measured linear
       response only reaches 0.43 (see the TDD doc).
@@ -262,9 +262,12 @@ Lightroom quirks:
   - The follow-up kits are baked and collected (`out/next-luts`, `out/next-spatial-exports`); scores
     in the TDD doc. Found: Highlights/Shadows on real photos have the right shape but a per-image
     strength (Highlights 0.15–0.85, Shadows 0.18–2.2 of the chart response, constant across
-    amounts). Inside flat areas Clarity + and Dehaze + are off (flats 4.06, 3.60); PV 15.4
-    Whites + is a shape gap (+25 0.16, +50 0.59); the built-in look's gap is the look, not the
-    colour sliders; Masking isn't modelled (Masking 100 0.21).
+    amounts). Masking is now modelled. Measured but left as they are (TDD doc): Clarity + and
+    Dehaze + inside flat areas (flats 4.06, 3.60; every wider term or haze setting that helps the
+    flats costs the scene chart); PV 15.4 Whites + (+25 0.16, +50 0.59; a pull toward each colour's
+    max that no curve method reproduces, and the presets use at most +14); the built-in look (1.13,
+    bright reds and yellows; gamut, blend, order and map parts all tested, needs bakes that
+    separate its table from its map).
   - The photo strength kit is baked (`out/photo-strength-exports`, 15 photos in all). Highlights'
     strength follows the black point (5th percentile of encoded luminance) ^ −0.57, Shadows'
     the mean linear luminance ^ 1.16, both 1 on the scene chart (`local_contrast.image_strength`):

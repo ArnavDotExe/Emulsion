@@ -2043,6 +2043,55 @@ are renders of the same 15 photos, but of each preset's full settings.
   `strength`; the local photo test 2.14 against < 1.0). GREEN updates two `render_preset` tests
   whose expected images used the chart's strength.
 
+## The four open gaps: Masking modelled; Whites + at PV 15.4, flat-area Clarity/Dehaze and the built-in look measured
+
+Journey: as the maintainer, I want each remaining gap either closed or explained with evidence,
+so the next work goes where it pays.
+
+**Sharpening Masking (`finish.sharpen`).** The fraction of Sharpen 50's change that Lightroom
+keeps on the scene chart is 1.00 / 0.97 / 0.48 at Masking 25 / 50 / 100; at 100 about 0.8 on
+strong edges and 0.18–0.34 on weaker ones. A soft threshold on the gradient of luma blurred by
+1 px, `0.8 * clip((g - 0.05) / 0.1, 0, 1)`, cuts Masking 100's squared error 24-fold (the best of
+blurs 0.5–3 px, thresholds 0.005–0.08, widths 0.005–0.1). It is blended in by
+`(masking / 100) ** 4`: the fitted blends were 0.008 / 0.054 / 1.07, against 0.004 / 0.062 / 1.
+Mean dE: Masking 100 0.202 -> 0.070, 50 0.056 -> 0.060, 25 0.061. The private presets use Masking
+0 or 20, where it scales the sharpening by under 0.2%.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Masking 0 changes nothing, 25 and 50 keep nearly all the sharpening, 100 keeps strong edges (0.6–0.85) and drops flat texture (< 0.25), monotone in between | `test_sharpening_masking_keeps_strong_edges_and_drops_flat_texture` | PASS |
+
+- RED `2106d93` (1 fails: Masking 100 keeps all of the sharpening in a flat noisy area),
+  GREEN `032f2ee` (595 public tests pass, 98%).
+
+**Whites + at PV 15.4 (not changed).** Against the PV 15.4 Whites + bakes, the hue-keeping curve on
+each colour's linear min and max (as now) beats the other ways of applying the same curve: +25 /
++50 0.16 / 0.59 now; pulled encoded min/max 0.18 / 0.63, encoded min/max 0.19 / 0.65, per channel
+0.24 / 0.93; one scene-scale gain at the brightness key 0.92 / 2.99 (at the mean 0.89 / 2.87).
+Lightroom's extra is a pull of the low and middle channels toward the colour's own max, about the
+same fraction for both, growing with amount and saturation but not simply with brightness (at
++100 it peaks for max 0.75–0.85 and vanishes at white). The private PV 15.4 presets use Whites +
+only up to +14, where the error is about 0.1, so three bakes don't justify an empirical model.
+
+**Clarity + and Dehaze + inside flat areas (not changed).** A wider detail term on Clarity, fitted
+on the flats and scene charts together, improves the flats but costs the scene chart at every
+width tried (W/32 to W/6): Clarity +100 flats 4.06 -> 2.80 but scene 1.88 -> 2.25 at W/6. A
+symmetric wide term is the wrong shape for Lightroom's one-sided contrast. On the flats, Lightroom
+keeps a saturated colour's max channel (0.95 stays 0.94 at Dehaze +100) where ours drops it
+(0.87–0.89); grays already match. Moving the haze level or the dark channel's share trades the
+same way: share 0.9 gives flats +100 3.60 -> 3.38 for scene +100 1.60 -> 1.62, haze level 0.97 and
+share 1.0 flats 2.51 for scene 2.49. The scene chart is closer to photos, so both stay.
+
+**The built-in look (not changed).** On its look-alone bake (1.13; neutrals 0.17) the error sits in
+bright reds and yellows (2.81 / 3.17 at max above 0.9); for bright yellows Lightroom has 6.7 more
+chroma, 2.7 less L* and 1.8 degrees less hue. The RGB table is in Adobe RGB primaries with gamut
+clip, and no grid colour leaves that gamut, so gamut handling isn't it (clip, extend and a clip
+toward luminance all give 1.13). Blending the table in linear light instead of encoded is worse
+(1.57). The hue/sat map: swapping its order with the table 1.13, the sRGB value key 1.98, and
+dropping its value scale, saturation scale or hue shift 1.26 / 1.39 / 1.26; trilinear lookup 1.14.
+Each part helps and the current arrangement is the best found; separating the table from the map
+needs Lightroom bakes.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
