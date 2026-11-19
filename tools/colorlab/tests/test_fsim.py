@@ -79,7 +79,7 @@ def _doc(**changes):
         *parents, key = path.split("__")
         node = doc
         for k in parents:
-            node = node[k]
+            node = node.setdefault(k, {})
         if value is _DELETE:
             del node[key]
         else:
@@ -106,6 +106,12 @@ BAD = {
     "bad base64": lambda: _doc(color__lut__data="!!!"),
     "short data": lambda: _doc(color__lut__data=base64.b64encode(b"\0" * 10).decode()),
     "missing lut": lambda: _doc(color=_DELETE),
+    "lut not an object": lambda: _doc(color__lut=[2]),
+    "data not text": lambda: _doc(color__lut__data=7),
+    "section not an object": lambda: _doc(local=[1]),
+    "fractional style": lambda: _doc(vignette__style=1.5),
+    "not finite": lambda: _doc(local__clarity=float("nan")),
+    "long description": lambda: _doc(description="x" * 2001),
 }
 
 
@@ -132,3 +138,21 @@ def test_a_look_needs_a_name_and_a_lut_to_build():
         Look(name=" ", lut=Lut3D.identity(2))
     with pytest.raises(FsimFormatError):
         Look(name="x" * 200, lut=Lut3D.identity(2))
+    with pytest.raises(FsimFormatError):
+        Look(name="x", lut=np.zeros((2, 2, 2, 3)))
+    with pytest.raises(FsimFormatError):
+        Look(name="x", lut=Lut3D.identity(66))
+
+
+def test_text_fields_round_trip_and_files_name_themselves_in_errors(tmp_path):
+    from colorlab.errors import FsimFormatError
+    from colorlab.fsim import MAX_TEXT_BYTES, Look, dumps, loads, read
+    look = Look(name="Notes", lut=Lut3D.identity(2), description="Soft warm fade", author="A", license="CC0-1.0")
+    back = loads(dumps(look))
+    assert (back.description, back.author, back.license) == ("Soft warm fade", "A", "CC0-1.0")
+    (tmp_path / "bad.fsim.json").write_text("{", encoding="utf-8")
+    with pytest.raises(FsimFormatError, match="bad.fsim.json"):
+        read(tmp_path / "bad.fsim.json")
+    (tmp_path / "big.fsim.json").write_bytes(b" " * (MAX_TEXT_BYTES + 1))
+    with pytest.raises(FsimFormatError, match="larger"):
+        read(tmp_path / "big.fsim.json")

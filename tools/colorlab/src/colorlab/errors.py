@@ -19,3 +19,7 @@ class LutFormatError(ColorlabError):
 
 class ParameterError(ColorlabError):
     """A processing parameter is outside its valid range."""
+
+
+class FsimFormatError(ColorlabError):
+    """A ``.fsim.json`` look is malformed or unsupported."""
