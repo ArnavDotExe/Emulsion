@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "FilmSim"
-include(":look")
+include(":look", ":app")
