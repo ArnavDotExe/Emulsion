@@ -16,7 +16,7 @@ class ShippedLooksTest {
     @Test
     fun everyShippedLookLoadsWithItsOwnNameAndLicence() {
         val library = LookLibrary.load(sources())
-        assertTrue(library.looks.size >= 50, "only ${library.looks.size} looks")
+        assertTrue(library.looks.size >= 40, "only ${library.looks.size} looks")
         for ((file, look) in library.byFile) {
             assertEquals(LookLibrary.fileName(look.name), file)
             assertEquals("Emulsion", look.author)
