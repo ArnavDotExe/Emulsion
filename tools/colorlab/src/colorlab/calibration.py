@@ -92,6 +92,7 @@ def _build() -> tuple[Variant, ...]:
         curves = {k: ((0, 0), (255, 255)) for k in _CURVE_KEYS}
         out.append(Variant(f"Cal Curve {name}", custom, {**curves, key: pts}))
     out += _process_version_15_4()
+    out += _process_version_15_4_color()
     for band in BANDS:
         b = band.capitalize()
         out += _sweep(f"HSL Hue {b}", f"HueAdjustment{b}", (-100, 100), ("K_SCENE",))
@@ -139,6 +140,30 @@ def _process_version_15_4() -> list[Variant]:
                            master_s))
     out.append(Variant("Cal PV15 Contrast +50 Curve Master S Refine 0",
                        {**custom, "Contrast2012": "+50", "CurveRefineSaturation": "0"}, master_s))
+    return out
+
+
+def _process_version_15_4_color() -> list[Variant]:
+    """Checks of the PV 15.4 colour sliders: Saturation, Vibrance and every HSL band alone, and
+    Saturation or Vibrance together with the HSL moves that act on bright saturated colours. They
+    fit nothing; they compare the PV 15.4 model with Lightroom (export them in ProPhoto as well,
+    to see colours beyond sRGB)."""
+    pv = {"ProcessVersion": "15.4"}
+    out = _sweep("PV15 Color Saturation", "Saturation", (-100, -50, 15, 50, 100), extra=pv)
+    out += _sweep("PV15 Color Vibrance", "Vibrance", (-100, -50, 40, 100), extra=pv)
+    for band in BANDS:
+        b = band.capitalize()
+        for label, key in (("Hue", "HueAdjustment"), ("Sat", "SaturationAdjustment"), ("Lum", "LuminanceAdjustment")):
+            out += _sweep(f"PV15 Color HSL {label} {b}", f"{key}{b}", (-100, 100), extra=pv)
+    hsl_moves = (("Hue Yellow -100", "HueAdjustmentYellow", "-100"), ("Sat Yellow -100", "SaturationAdjustmentYellow", "-100"),
+                 ("Lum Yellow +100", "LuminanceAdjustmentYellow", "+100"), ("Lum Orange +100", "LuminanceAdjustmentOrange", "+100"),
+                 ("Sat Magenta -100", "SaturationAdjustmentMagenta", "-100"))
+    for slider in ("Saturation", "Vibrance"):
+        for label, key, value in hsl_moves:
+            out.append(Variant(f"Cal PV15 Color {slider} +50 {label}", {**pv, slider: "+50", key: value}))
+    out.append(Variant("Cal PV15 Color Saturation +50 Vibrance +50", {**pv, "Saturation": "+50", "Vibrance": "+50"}))
+    out.append(Variant("Cal PV15 Color Saturation +100 Hue Yellow -100 Sat Yellow -50",
+                       {**pv, "Saturation": "+100", "HueAdjustmentYellow": "-100", "SaturationAdjustmentYellow": "-50"}))
     return out
 
 
