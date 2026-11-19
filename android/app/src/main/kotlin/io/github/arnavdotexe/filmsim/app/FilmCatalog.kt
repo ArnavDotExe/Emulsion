@@ -1,14 +1,24 @@
 package io.github.arnavdotexe.filmsim.app
 
-/** The kinds of film the films tab groups the looks by, in display order. */
-enum class FilmKind(val label: String) {
-    NEGATIVE("Colour negative"),
-    SLIDE("Slide"),
-    MONO("Black & white"),
-    CINE("Cinema"),
-    INSTANT("Instant"),
-    VINTAGE("Vintage"),
-    CREATIVE("Recipes & creative"),
+/**
+ * The houses the films tab groups the looks by, in display order. Each is named for the look of
+ * the film it evokes (a yellow box, a green label, silver halide...), never by a maker's trademark.
+ */
+enum class House(val title: String, val tagline: String) {
+    GOLDBOX("Goldbox", "Warm golden classics: portrait negative, rich slide, cinema and infrared"),
+    GREENLEAF("Greenleaf", "Airy green-label film: pastel and pro negatives, clean slide"),
+    ARGENTUM("Argentum", "Silver black and white"),
+    SNAPSHOT("Snapshot", "Instant prints, soft and muted"),
+    OLD_EUROPE("Old Europe", "Early colour film from the 1940s"),
+    STUDIO("Studio", "Everyday analog colour and faded retro prints"),
+    RECIPES("Recipes", "Digital film recipes for street, portrait and landscape"),
+}
+
+/** The demo images a film is previewed on in the films tab (bundled, drawn by tools/demo_images). */
+enum class DemoScene(val title: String, val assetPath: String) {
+    LANDSCAPE("Landscape", "demo/landscape.png"),
+    PORTRAIT("Portrait", "demo/portrait.png"),
+    STILL_LIFE("Still life", "demo/still_life.png"),
 }
 
 /**
@@ -19,38 +29,39 @@ data class Film(
     val name: String,
     val lookName: String,
     val grainLookName: String?,
-    val kind: FilmKind,
+    val house: House,
     val hint: String,
 )
 
 object FilmCatalog {
     private const val GRAIN_SUFFIX = " Grain"
 
-    /** The kind of film a look evokes, from its description (and name). */
-    fun kindOf(name: String, description: String): FilmKind {
-        val d = description.lowercase()
-        val n = name.lowercase()
+    private val GOLDBOX_FILMS = listOf("Portrait 400", "Chrome 64", "Slide 200", "Infrared 16", "Cine 500T")
+
+    /** The house a look belongs to, from its name (a "… Grain" twin sits with its film). */
+    fun houseOf(name: String): House {
+        val base = name.removeSuffix(GRAIN_SUFFIX)
         return when {
-            "black and white" in d -> FilmKind.MONO
-            "slide film" in d || "slide base" in d -> FilmKind.SLIDE
-            "colour negative" in d || "negative base" in d || "everyday analog" in d -> FilmKind.NEGATIVE
-            "cinema" in d -> FilmKind.CINE
-            "instant" in d -> FilmKind.INSTANT
-            "1940s" in d || "retro" in d || "infrared" in d || "infrared" in n -> FilmKind.VINTAGE
-            else -> FilmKind.CREATIVE
+            GOLDBOX_FILMS.any { base.startsWith(it) } -> House.GOLDBOX
+            base.startsWith("Pro Pastel") || base.startsWith("Neg ") || base.startsWith("Slide Clean") -> House.GREENLEAF
+            base.endsWith(" Recipe") -> House.RECIPES
+            base.startsWith("Fine Mono") -> House.ARGENTUM
+            base.startsWith("Instant") -> House.SNAPSHOT
+            base.startsWith("Colour 1940s") -> House.OLD_EUROPE
+            else -> House.STUDIO
         }
     }
 
-    /** The cards for looks given as (name, description): grain twins folded, ordered by kind then name. */
+    /** The cards for looks given as (name, description): grain twins folded, ordered by house then name. */
     fun build(looks: List<Pair<String, String>>): List<Film> {
         val names = looks.map { it.first }.toSet()
         return looks
             .filterNot { (name, _) -> name.endsWith(GRAIN_SUFFIX) && name.removeSuffix(GRAIN_SUFFIX) in names }
             .map { (name, description) ->
                 val grain = (name + GRAIN_SUFFIX).takeIf { it in names }
-                Film(name, name, grain, kindOf(name, description), description.substringBefore('.').trim())
+                Film(name, name, grain, houseOf(name), description.substringBefore('.').trim())
             }
-            .sortedWith(compareBy({ it.kind.ordinal }, { it.name.lowercase() }))
+            .sortedWith(compareBy({ it.house.ordinal }, { it.name.lowercase() }))
     }
 
     /** The card that holds the look named [lookName] (itself or its grain twin). */

@@ -127,10 +127,21 @@ python look/src/test/fixtures/make_conformance.py      # regenerate the fixtures
 - `:app`: `FilmProcessor` (a CameraX `SurfaceProcessor` in a preview `CameraEffect`, the LUT as an
   RGB16F 3D texture with the same tetrahedra in GLSL), `Capture.kt` (upright bitmap, LUT on all
   cores, JPEG to `DCIM/Emulsion`), `MainActivity` (permission, look loading).
-  - The camera screen (`CameraScreen`, `CameraUi`) follows PhotonCamera's layout (GPL-3.0; layout
-    only, no code taken): a top bar (flash, timer, grid, level, PRO), the 3:4 viewfinder (tap to
-    focus, pinch zoom, lens pills), the manual panel, the looks picker, and the bottom bar (last photo
-    from `Gallery.kt`, shutter, flip). Preview and capture share one 3:4 `ViewPort`.
+  - The camera screen (`CameraScreen`, `CameraUi`) mixes PhotonCamera's layout (GPL-3.0; layout
+    only, no code taken) with Aperture's quick controls: a top bar of icons (flash, timer, grid,
+    level), the 3:4 viewfinder (tap to focus, pinch zoom, lens chips, a film badge), quick chips
+    (exposure, focus, light, film) that open one panel at a time (dials for EV, ISO, shutter, focus
+    and white balance), a PHOTO / FILMS switcher and the bottom bar (last photo from `Gallery.kt`,
+    shutter, flip). Preview and capture share one 3:4 `ViewPort`.
+  - The FILMS tab (`FilmsTab`, `FilmCatalog`) is a grid of cards grouped into *houses*: invented
+    names for what a film evokes (Goldbox, Greenleaf, Argentum, Snapshot, Old Europe, Studio,
+    Recipes), never a maker's trademark. Grain twins share a card. Cards are previewed on three
+    bundled demo scenes (`assets/demo/*.png`, drawn by `tools/demo_images/make_demo_images.py`,
+    our own artwork), each rendered through the look's LUT only while it is on screen.
+  - Electronic stabilisation must stay OFF (`ManualCamera.fullFieldOfView`, and in `apply`): on the
+    Pixel it crops 12% off the field of view, so 1x looked zoomed against the stock app. Found by
+    diffing `adb shell dumpsys media.camera` for both apps and checked by registering photos
+    (scale 0.89 -> 1.00).
   - `CameraControls` is the pure, unit-tested logic (`CameraControlsTest`): zoom, ISO and shutter
     stops, labels, the level angle, the flash and timer cycles.
   - `ManualCamera` uses Camera2 interop (AndroidX `@OptIn`, or lint fails) for live ISO/shutter

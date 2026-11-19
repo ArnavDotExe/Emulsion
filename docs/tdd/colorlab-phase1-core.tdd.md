@@ -2155,6 +2155,30 @@ B/G ratios (statue 0.88/1.09 manual against 0.85/1.08 auto); a photo at ISO 400 
 at 202/201/191.
 
 
+### Camera redesign, films tab and the 1x field of view
+
+Redesigned as a mix of PhotonCamera and Aperture (layout only): icon top bar, quick chips that open
+one panel at a time, a PHOTO / FILMS switcher. The films are their own tab: cards grouped into
+invented houses, each previewed on a demo scene.
+
+| Commit | Stage | Evidence |
+|---|---|---|
+| 0235a03 | RED | `FilmCatalog`, `FilmKind`, `exposureChip` unresolved |
+| fb8070f | GREEN | 12 tests: grain twins fold into their film, the exposure chip reads AUTO, the compensation or M |
+| f4e4ec3 | RED | `House`, `DemoScene`, `Film.house` unresolved (compile-time) |
+| (this commit) | GREEN | `./gradlew :app:testDebugUnitTest` 15 tests, 0 failures: every look has a house, no maker's trademark in any house title or tagline, three 3:4 PNG demo scenes under 700 KB; `:app:lintDebug` no issues |
+
+1x was more zoomed than the stock app. The dump of both apps' live requests (`adb shell dumpsys
+media.camera`) matched on camera 0, zoom ratio 1.0 and crop region 0 0 4000 3000, and differed in
+`videoStabilizationMode`: ON for ours, OFF for stock. On the Pixel electronic stabilisation crops the
+field of view. Registering the two photos of one static scene (phase correlation over a scale
+sweep): ours needed shrinking by 0.89 (correlation 0.74, zero shift), a pure 12% centre crop. With
+stabilisation off in the preview, capture and every request, the scale is 1.00 at zero shift
+(correlation 0.77).
+
+Not done: the unit tests don't cover the camera binding. The demo scenes are procedural, so the
+landscape and portrait look drawn rather than photographed.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

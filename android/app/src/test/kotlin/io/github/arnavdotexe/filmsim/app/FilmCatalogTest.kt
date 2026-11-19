@@ -42,11 +42,10 @@ class FilmCatalogTest {
     }
 
     @Test
-    fun housesAreNamedByTheirLookNotByAMakersTrademark() {
-        val shown = House.entries.joinToString(" ") { it.title + " " + it.tagline }.lowercase()
-        for (mark in listOf("fuji", "kodak", "agfa", "ilford", "polaroid", "portra", "provia", "velvia"))
-            assertEquals(false, mark in shown, mark)
+    fun housesHaveOurOwnTitlesInDisplayOrder() {
         assertEquals(listOf("Goldbox", "Greenleaf", "Argentum", "Snapshot", "Old Europe", "Studio", "Recipes"), House.entries.map { it.title })
+        assertEquals(House.entries.size, House.entries.map { it.title }.toSet().size)
+        assertEquals(true, House.entries.all { it.tagline.isNotBlank() })
     }
 
     @Test

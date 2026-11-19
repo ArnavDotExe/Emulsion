@@ -58,6 +58,17 @@ data class LiveExposure(
 )
 
 object ManualCamera {
+    /**
+     * Turn electronic stabilisation off. On the Pixel it crops about 12% off the field of view
+     * (measured against the stock app, whose 1x is that much wider), so photos looked zoomed in.
+     */
+    @OptIn(markerClass = [ExperimentalCamera2Interop::class])
+    fun <T> fullFieldOfView(builder: ExtendableBuilder<T>) {
+        Camera2Interop.Extender(builder).setCaptureRequestOption(
+            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
+        )
+    }
+
     /** Report each preview frame's ISO and shutter time to [onExposure] (the HUD and the manual dials start there). */
     @OptIn(markerClass = [ExperimentalCamera2Interop::class])
     fun <T> watchExposure(builder: ExtendableBuilder<T>, onExposure: (LiveExposure) -> Unit) {
@@ -103,6 +114,7 @@ object ManualCamera {
     @OptIn(markerClass = [ExperimentalCamera2Interop::class])
     fun apply(camera: Camera, manual: Manual, live: LiveExposure) {
         val options = CaptureRequestOptions.Builder()
+        options.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         if (manual.iso != null || manual.shutterNs != null) {
             options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
             options.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, manual.iso ?: live.iso.coerceAtLeast(50))
