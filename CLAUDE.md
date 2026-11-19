@@ -224,7 +224,8 @@ Lightroom quirks:
     ProPhoto exports) showed PV 15.4 HSL is right and gave the colour scale its knee: grid 3.31 ->
     2.92. PV 15.4's positive Saturation has its own shoulder and pivot
     (`pipeline.POSITIVE_SATURATION_SHOULDER` 3.2, `POSITIVE_SATURATION_PIVOT`): ProPhoto +50/+100
-    0.95/1.37 -> 0.77/1.01, grid 2.78. Left: bright yellows under that look;
+    0.95/1.37 -> 0.77/1.01, grid 2.78. Left: bright yellows under that look (about 1 dE is a look x colour-slider
+    interaction that even Lightroom's own look-only LUTs don't reproduce; needs bakes);
     strong Highlights +
     Clarity + Dehaze presets are 1.5–2.5. Looks whose profile carries Highlights/Shadows have
     baked LUTs that hold a Hald-specific version of that pass.

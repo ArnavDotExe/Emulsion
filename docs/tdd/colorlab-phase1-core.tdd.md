@@ -1723,6 +1723,27 @@ out too dark. At -100 Lightroom keeps a mid-saturated colour's max at 0.75 of it
 
 - RED `94d9a1f` (cannot import `NEGATIVE_VIBRANCE_DARKEN`), GREEN `132b224` (537 pass, 98%).
 
+## Bright saturated colours under a look: an interaction, not a stage
+
+The worst preset's colour sliders under its built-in look (`Bright Color Part Look 90`, ProPhoto) score
+1.60 (2.47 on bright saturated colours); without the look the same sliders score 0.70.
+
+- **Our look stage on Lightroom's own colour-part output** still scores 1.26 (1.97). On the plain
+  grid it is accurate for the same colours: the cell nearest that output, (0.82, 0.71, 0.51), is
+  0.92 off.
+- **The look's position is right.** Before Saturation 5.40, first 4.68, after HSL or last 1.60.
+  Splitting it, table first and map after HSL scores 4.97, map first and table after 2.61.
+- **Lightroom's own look isn't a function of the colour part's output.** Its look-only LUTs
+  (`out/decomp-luts`, Look 50/100 interpolated to 90), applied to its own colour-part bake, miss its
+  Look 90 bake by 1.12 ΔE (1.01 where the colour part isn't clipped, 2.45 where it is). For the
+  bright yellow (1, 1, 0.25), the colour part gives (0.814, 0.681, 0.508). Lightroom's look on that
+  gives (0.542, 0.442, 0.387), but on a grid input of nearly the same value it gives
+  (0.617, 0.531, 0.467) at amount 100.
+
+So about 1 ΔE of this gap is an interaction between the look and the colour sliders, which no
+stage-by-stage model (Lightroom's own LUTs included) reproduces. Finding it needs bakes of the look
+with single colour sliders. No code change.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches
