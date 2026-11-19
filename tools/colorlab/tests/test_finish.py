@@ -265,3 +265,21 @@ def test_apply_settings_adapts_highlights_and_shadows_to_the_image():
     out = apply_settings(img, {"Highlights2012": "-60", "Shadows2012": "+40"})
     np.testing.assert_allclose(out, highlights_shadows(img, -60, 40, strength=image_strength(img)))
     assert not np.allclose(out, highlights_shadows(img, -60, 40), atol=1e-3)
+
+
+def test_sharpening_masking_keeps_strong_edges_and_drops_flat_texture():
+    # Lightroom's Masking 25/50/100 on the scene chart keep 1.00/0.97/0.48 of Sharpen 50's change:
+    # strong edges keep about 0.8 at 100, low-contrast detail much less
+    rng = np.random.default_rng(5)
+    img = np.full((64, 128), 0.4) + 0.01 * rng.standard_normal((64, 128))
+    img[:, 96:] = 0.9  # a strong edge at x = 96
+    img = np.clip(img, 0, 1)[..., None].repeat(3, axis=-1)
+    plain = sharpen(img, 50) - img
+    def kept(masking, cols):
+        d = sharpen(img, 50, masking=masking) - img
+        return np.abs(d[:, cols]).sum() / np.abs(plain[:, cols]).sum()
+    flat, edge_cols = slice(10, 80), slice(93, 99)
+    np.testing.assert_allclose(sharpen(img, 50, masking=0), sharpen(img, 50))
+    assert kept(25, flat) > 0.97 and kept(50, flat) > 0.9
+    assert kept(100, flat) < 0.25 < 0.6 < kept(100, edge_cols) <= 0.85
+    assert kept(100, flat) < kept(75, flat) < kept(50, flat)
