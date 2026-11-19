@@ -276,13 +276,13 @@ def scene_color(hue_deg, sat=0.6, value=0.5):
     """A working-encoded color whose hexcone hue on the HSL stage's scene scale is ``hue_deg``."""
     import colorsys
     from colorlab.pipeline import K_SCENE
-    return unscene(np.array(colorsys.hsv_to_rgb(hue_deg / 360, sat, value)) / K_SCENE)
+    return color_unscene(np.array(colorsys.hsv_to_rgb(hue_deg / 360, sat, value)) / K_SCENE)
 
 
 def scene_hsv(enc):
     import colorsys
     from colorlab.pipeline import K_SCENE
-    h, s, v = colorsys.rgb_to_hsv(*(scene(enc) * K_SCENE))
+    h, s, v = colorsys.rgb_to_hsv(*(color_scene(enc) * K_SCENE))
     return h * 360, s, v
 
 
@@ -547,11 +547,39 @@ def unscene(x):
     return cs.encode(lin, WORKING_TRANSFER)
 
 
+def _color_stretch_fns():
+    """The colour stages' scene scale: the shoulder's stretch up to COLOR_KNEE (encoded), then
+    straight on with the slope there (an independent model of pipeline._color_stretch)."""
+    from colorlab.pipeline import COLOR_KNEE, _response
+    sh = _response().exposure
+    top = float(sh.stretch(np.array(COLOR_KNEE)))
+    h = 1e-6
+    slope = float((sh.stretch(np.array(COLOR_KNEE + h)) - sh.stretch(np.array(COLOR_KNEE - h))) / (2 * h))
+    fwd = lambda e: np.where(e <= COLOR_KNEE, sh.stretch(np.minimum(e, COLOR_KNEE)), top + slope * (e - COLOR_KNEE))
+    inv = lambda y: np.where(y <= top, sh.rolloff(np.minimum(y, top)), COLOR_KNEE + (y - top) / slope)
+    return fwd, inv
+
+
+def color_scene(enc):
+    """Working values on the colour sliders' scene scale (min and max stretched, middle kept)."""
+    from colorlab.pipeline import WORKING_TRANSFER, rgb_tone
+    fwd, _ = _color_stretch_fns()
+    lin = cs.decode(np.asarray(enc, dtype=np.float64), WORKING_TRANSFER)
+    return rgb_tone(lin, lambda x: fwd(cs.encode(np.maximum(x, 0.0), WORKING_TRANSFER)))
+
+
+def color_unscene(x):
+    from colorlab.pipeline import WORKING_TRANSFER, rgb_tone
+    _, inv = _color_stretch_fns()
+    lin = rgb_tone(np.asarray(x, dtype=np.float64), lambda y: cs.decode(np.maximum(inv(y), 0.0), WORKING_TRANSFER))
+    return cs.encode(lin, WORKING_TRANSFER)
+
+
 def test_vibrance_keeps_hue_on_the_scene_linear_scale_and_brightens_drained_blues():
     from colorlab.pipeline import _LUMA
     out = saturation_vibrance(BLUE, vibrance=-100)
     place = lambda x: (x[1] - x.min()) / np.ptp(x)  # the middle channel's place between min and max
-    assert place(scene(out)) == pytest.approx(place(scene(BLUE)), abs=1e-9)
+    assert place(color_scene(out)) == pytest.approx(place(color_scene(BLUE)), abs=1e-9)
     assert out @ _LUMA > BLUE @ _LUMA  # Lightroom brightens blues as vibrance drains them
 
 
@@ -559,7 +587,7 @@ def test_saturation_keeps_scene_linear_luminance():
     ys = np.array([0.2880859375, 0.7119140625, 0.0])  # the working space's luminance weights
     for sat in (-60, 50):
         out = saturation_vibrance(MUTED, saturation=sat)
-        assert scene(out) @ ys == pytest.approx(scene(MUTED) @ ys, rel=1e-9)
+        assert color_scene(out) @ ys == pytest.approx(color_scene(MUTED) @ ys, rel=1e-9)
 
 
 # Lightroom bakes of the calibration presets (sRGB in and out) at in-gamut colors
@@ -606,18 +634,18 @@ def test_neutral_mix_gives_scene_luminance_at_each_band_center(band):
     color = scene_color(BAND_DEGREES[band], sat=0.7, value=0.6)
     out = grayscale(color)
     np.testing.assert_allclose(out, out[0], atol=1e-12)
-    np.testing.assert_allclose(scene(out)[0], scene(color) @ np.array(_TINT_LUMA), rtol=1e-6)
+    np.testing.assert_allclose(color_scene(out)[0], color_scene(color) @ np.array(_TINT_LUMA), rtol=1e-6)
 
 
 def test_mixer_plus_100_adds_two_and_a_quarter_gaps_and_minus_100_darkens_smoothly():
     from colorlab.pipeline import K_SCENE, _TINT_LUMA
     color = scene_color(30, sat=0.5, value=0.08)  # orange, dim enough not to clip
-    x = scene(color) * K_SCENE
+    x = color_scene(color) * K_SCENE
     lo, hi = x.min(), x.max()
     lum = x @ np.array(_TINT_LUMA)
-    up = scene(grayscale(color, {"orange": 100}))[0] * K_SCENE
+    up = color_scene(grayscale(color, {"orange": 100}))[0] * K_SCENE
     np.testing.assert_allclose(up, lum + 2.25 * (hi - lo), rtol=1e-6)
-    darker = [scene(grayscale(color, {"orange": a}))[0] for a in (0, -25, -50, -75, -100)]
+    darker = [color_scene(grayscale(color, {"orange": a}))[0] for a in (0, -25, -50, -75, -100)]
     assert all(a > b for a, b in zip(darker, darker[1:])) and darker[-1] >= 0.0
     np.testing.assert_allclose(grayscale(GRAYS, {"orange": -100, "blue": 100}), GRAYS, atol=1e-12)
 

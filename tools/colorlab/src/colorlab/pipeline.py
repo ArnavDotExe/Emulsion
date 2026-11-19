@@ -402,7 +402,7 @@ def hsl_adjust(enc: np.ndarray, hue: Mapping[str, float] | None = None,
                vibrance: float = 0.0, smooth: bool = False) -> np.ndarray:
     """Vibrance, then per-band hue, saturation and luminance (all -100..100), as Lightroom's HSL.
 
-    Runs on scene-linear values (see :func:`_to_scene`, in units of ``K_SCENE``), split into
+    Runs on scene-linear values (see :func:`_to_color_scene`, in units of ``K_SCENE``), split into
     each color's smallest and largest channel and its hexcone hue. A
     band's settings fade linearly from its center to the neighbouring centers; ``smooth``
     (process version 15.4 and later) fades them along a monotone spline instead and splits colors
@@ -416,7 +416,7 @@ def hsl_adjust(enc: np.ndarray, hue: Mapping[str, float] | None = None,
     enc = _as_rgb(enc)
     if not (vibrance or hv.any() or sv.any() or lv.any()):
         return enc
-    lo, hi, h, gap = _to_mmh(_to_scene(enc) * K_SCENE, smooth)
+    lo, hi, h, gap = _to_mmh(_to_color_scene(enc) * K_SCENE, smooth)
     if vibrance:
         lo, hi = _vibrance(lo, hi, h, vibrance / 100)
         gap = hi - lo
@@ -425,7 +425,7 @@ def hsl_adjust(enc: np.ndarray, hue: Mapping[str, float] | None = None,
         if hue_table[0] < 0:
             hue_table = hue_table + 6.0
         lo, hi, h = _tune_bands(lo, hi, h, gap, hue_table, _band_table(sv, smooth), _band_table(lv, smooth))
-    return _from_scene(_from_mmh(lo, hi, h, smooth) / K_SCENE)
+    return _from_color_scene(_from_mmh(lo, hi, h, smooth) / K_SCENE)
 
 
 def _to_scene(enc: np.ndarray, shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
@@ -445,6 +445,43 @@ def _from_scene(scene: np.ndarray, shoulder: response.ExposureShoulder | None = 
     """The inverse of :func:`_to_scene`."""
     rolloff = (shoulder if shoulder is not None else _response().exposure).rolloff
     lin = rgb_tone(np.maximum(scene, 0.0), lambda y: cs.decode(rolloff(y), WORKING_TRANSFER))
+    return cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
+
+
+#: encoded value above which the colour sliders' scene scale goes on linearly. The shoulder's stretch
+#: runs off to infinity at white, which made saturation wipe out near-white tints' low channel; fitted
+#: on the PV 15.4 colour bakes' ProPhoto exports (0.94 of 0.90-0.98; colour stages only, since
+#: white balance and exposure fit the plain shoulder)
+COLOR_KNEE = 0.94
+
+
+def _color_stretch(shoulder: response.ExposureShoulder) -> tuple[Callable, Callable]:
+    """The shoulder's stretch up to :data:`COLOR_KNEE`, then a straight line with its slope there."""
+    knee = np.array(COLOR_KNEE)
+    top = shoulder.stretch(knee)
+    slope = (shoulder.stretch(knee + 1e-7) - shoulder.stretch(knee - 1e-7)) / 2e-7
+
+    def forward(e: np.ndarray) -> np.ndarray:
+        return np.where(e <= COLOR_KNEE, shoulder.stretch(np.minimum(e, COLOR_KNEE)), top + slope * (e - COLOR_KNEE))
+
+    def inverse(y: np.ndarray) -> np.ndarray:
+        return np.where(y <= top, shoulder.rolloff(np.minimum(y, top)), COLOR_KNEE + (y - top) / slope)
+
+    return forward, inverse
+
+
+def _to_color_scene(enc: np.ndarray) -> np.ndarray:
+    """Working-encoded values -> the scene scale of saturation, vibrance, HSL and B&W: that of
+    :func:`_to_scene`, with a finite top (:data:`COLOR_KNEE`)."""
+    forward, _ = _color_stretch(_response().exposure)
+    return rgb_tone(cs.decode(enc, WORKING_TRANSFER),
+                    lambda x: forward(cs.encode(np.maximum(x, 0.0), WORKING_TRANSFER)))
+
+
+def _from_color_scene(scene: np.ndarray) -> np.ndarray:
+    """The inverse of :func:`_to_color_scene`."""
+    _, inverse = _color_stretch(_response().exposure)
+    lin = rgb_tone(np.maximum(scene, 0.0), lambda y: cs.decode(np.maximum(inverse(y), 0.0), WORKING_TRANSFER))
     return cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
 
 
@@ -742,7 +779,7 @@ def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: floa
     if saturation:
         s = (saturation + 100) / 100
         matrix = _OPPONENT_INV @ np.diag([1.0, s, s]) @ _OPPONENT
-        enc = _from_scene(np.maximum(_to_scene(enc) @ matrix.T, 0.0))
+        enc = _from_color_scene(np.maximum(_to_color_scene(enc) @ matrix.T, 0.0))
     return hsl_adjust(enc, vibrance=vibrance, smooth=smooth)
 
 
@@ -814,11 +851,11 @@ def grayscale(enc: np.ndarray, mixer: Mapping[str, float] | None = None) -> np.n
     sliders = _band_values("mixer", mixer, -100, 100) / 100
     enc = _as_rgb(enc)
     table = _band_table(_mixer_weight(sliders, _mixer_defaults()), smooth=False)
-    lo, hi, h, gap = _to_mmh(_to_scene(enc) * K_SCENE, smooth=False)
+    lo, hi, h, gap = _to_mmh(_to_color_scene(enc) * K_SCENE, smooth=False)
     w = _lookup(table, h)
     dark = _dark_decode(_dark_encode(lo) + (_dark_encode(hi) - _dark_encode(lo)) * w)
     gray = np.clip(np.where(w >= 0, lo + gap * w, dark), 0.0, 1.0)
-    out = _from_scene(np.repeat(gray[..., None], 3, axis=-1) / K_SCENE)
+    out = _from_color_scene(np.repeat(gray[..., None], 3, axis=-1) / K_SCENE)
     return np.where((gap > 0)[..., None], out, enc)
 
 
