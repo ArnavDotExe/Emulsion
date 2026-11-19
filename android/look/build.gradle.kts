@@ -13,3 +13,10 @@ dependencies {
     testImplementation(libs.kotlin.test.junit)
     testImplementation(libs.junit)
 }
+
+tasks.test {
+    // The looks bundled in the app, checked by ShippedLooksTest.
+    val shipped = rootProject.layout.projectDirectory.dir("app/src/main/assets/looks")
+    inputs.dir(shipped).withPropertyName("shippedLooks")
+    systemProperty("filmsim.shippedLooks", shipped.asFile.absolutePath)
+}
