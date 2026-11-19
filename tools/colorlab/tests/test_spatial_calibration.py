@@ -294,3 +294,82 @@ def test_cli_kit_scale_test(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(sc, "SCALE_VARIANTS", small)
     assert main(["kit", str(tmp_path / "k"), "--scale-test"]) == 0
     assert f"{len(small)} spatial calibration image" in capsys.readouterr().out
+
+
+# --- follow-up kit -----------------------------------------------------------------------------
+
+def test_flats_chart_has_large_gray_steps_and_bright_saturated_colors():
+    imgs, regions = charts()
+    flats = regions["flats"]
+    grays = [r for r in flats.values() if r["kind"] == "flat"]
+    colors = [r for r in flats.values() if r["kind"] == "color"]
+    assert len(grays) >= 12 and len(colors) >= 6
+    assert min(r["value"][0] for r in grays) < 0.05 and max(r["value"][0] for r in grays) > 0.95
+    bright = [r for r in colors if max(r["value"]) >= 0.9 and min(r["value"]) <= 0.25]
+    assert len(bright) >= 6
+    for r in grays + colors:
+        y0, y1, x0, x1 = r["box"]
+        assert y1 - y0 >= 200 and x1 - x0 >= 200  # flat insides far from every edge
+
+
+def test_followup_variants_cover_the_open_spatial_bakes():
+    from colorlab.spatial_calibration import FOLLOWUP_VARIANTS
+    names = [v.name for v in FOLLOWUP_VARIANTS]
+    by = {v.name: v for v in FOLLOWUP_VARIANTS}
+    assert len(names) == len({n.lower() for n in names}) and not set(names) & set(BY_NAME)
+    assert all(re.fullmatch(r"Spatial [A-Za-z0-9 +\-.]+", n) for n in names)
+    assert by["Spatial Identity Flats"].chart == "flats"
+    assert by["Spatial Identity Scene PV15"].settings["ProcessVersion"] == "15.4"
+    for key, label, amounts in (("Dehaze", "Dehaze", (-100, -50, 50, 100)), ("Clarity2012", "Clarity", (50, 100)),
+                                ("Highlights2012", "Highlights", (50, 100))):
+        for a in amounts:
+            v = by[f"Spatial Flats {label} {a:+g}"]
+            assert v.chart == "flats" and float(v.settings[key]) == a
+    for name, pair in (("Highlights +50 Clarity +50", {"Highlights2012": "+50", "Clarity2012": "+50"}),
+                       ("Highlights +50 Dehaze +50", {"Highlights2012": "+50", "Dehaze": "+50"}),
+                       ("Highlights -35 Shadows +30", {"Highlights2012": "-35", "Shadows2012": "+30"}),
+                       ("Highlights -50 Shadows +50", {"Highlights2012": "-50", "Shadows2012": "+50"})):
+        v = by[f"Spatial {name}"]
+        assert v.chart == "scene" and {k: v.settings[k] for k in pair} == pair
+    for m in ("25", "100"):
+        s = by[f"Spatial Sharpen 50 Masking {m}"].settings
+        assert s["Sharpness"] == "50" and s["SharpenEdgeMasking"] == m and "SharpenRadius" in s
+    for label, key in (("Highlights", "Highlights2012"), ("Shadows", "Shadows2012")):
+        for a in (-100, -50, -25, 25, 50, 100):
+            v = by[f"Spatial PV15 {label} {a:+g}"]
+            assert v.chart == "scene" and v.settings["ProcessVersion"] == "15.4" and float(v.settings[key]) == a
+
+
+def test_photo_variants_move_highlights_and_shadows_at_pv_15_4_on_the_photo():
+    from colorlab.spatial_calibration import photo_variants
+    vs = photo_variants("photo2", (300, 450))
+    assert vs[0].name == "Spatial Photo photo2 Identity" and vs[0].baseline
+    assert all(v.chart == "photo photo2" and v.size == (300, 450) and v.settings["ProcessVersion"] == "15.4" for v in vs)
+    moved = {(k, float(v.settings[k])) for v in vs for k in ("Highlights2012", "Shadows2012") if float(v.settings.get(k, 0))}
+    assert {("Highlights2012", a) for a in (-100, -50, -25, 50, 100)} <= moved
+    assert {("Shadows2012", a) for a in (-50, 25, 50, 100)} <= moved
+    assert any(float(v.settings.get("Highlights2012", 0)) < 0 < float(v.settings.get("Shadows2012", 0)) for v in vs)
+    with pytest.raises(ValueError):
+        photo_variants("bad/name", (10, 10))
+
+
+def test_kit_writes_photos_with_their_settings_and_cli_builds_the_followup_kit(tmp_path):
+    from colorlab.bake import write_rgb_tiff16
+    from colorlab.errors import ColorlabError
+    from colorlab.spatial_calibration import FOLLOWUP_VARIANTS, photo_variants
+    photo = np.linspace(0, 1, 40 * 60 * 3).reshape(40, 60, 3)
+    out = tmp_path / "kit"
+    write_spatial_kit(out, photo_variants("p1", photo.shape[:2]), photos={"p1": photo})
+    v = photo_variants("p1", photo.shape[:2])[2]
+    np.testing.assert_allclose(read_rgb_tiff(out / "images" / f"{v.name}.tif"), photo, atol=1 / 65535)
+    entry = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["entries"][2]
+    assert entry["chart"] == "photo p1" and entry["size"] == [40, 60]
+    with pytest.raises(ColorlabError):
+        write_spatial_kit(tmp_path / "k2", photo_variants("p9", (4, 4)))
+    with pytest.raises(ColorlabError):
+        write_spatial_kit(tmp_path / "k3", photo_variants("p1", (4, 4)), photos={"p1": photo})
+    photos = tmp_path / "photos"
+    write_rgb_tiff16(photos / "p1.tif", photo)
+    assert main(["kit", str(tmp_path / "follow"), "--followup", "--photos", str(photos)]) == 0
+    written = {p.stem for p in (tmp_path / "follow" / "images").glob("*.tif")}
+    assert written == {v.name for v in FOLLOWUP_VARIANTS} | {v.name for v in photo_variants("p1", (40, 60))}

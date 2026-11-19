@@ -422,3 +422,36 @@ def test_process_version_15_4_color_variants_check_saturation_vibrance_and_hsl_a
         assert v.settings["ProcessVersion"] == "15.4" and v.fits == ()
         assert parse_preset(variant_xmp(v)).process_version == "15.4"
     assert len(names) == len(color) >= 60
+
+
+def test_followup_variants_cover_the_open_global_bakes():
+    # Whites + at PV 15.4 between 0 and +100, the B&W mixer at PV 15.4, and Saturation - with
+    # Vibrance - (one private preset with both got worse when negative vibrance was fixed).
+    for v in ("+25", "+50"):
+        assert BY_NAME[f"Cal PV15 Whites {v}"].settings == {"ProcessVersion": "15.4", "Whites2012": v}
+    neutral = BY_NAME["Cal PV15 BW Neutral Mix"].settings
+    assert neutral["ProcessVersion"] == "15.4" and neutral["ConvertToGrayscale"] == "True"
+    for band in BANDS:
+        b = band.capitalize()
+        mix = BY_NAME[f"Cal PV15 BW Mix {b} +100"].settings
+        assert mix[f"GrayMixer{b}"] == "+100" and all(f"GrayMixer{o.capitalize()}" in mix for o in BANDS)
+    combos = [v for v in VARIANTS if "SatVib" in v.name]
+    assert len(combos) >= 8
+    for pv in ("11.0", "15.4"):
+        mine = [v for v in combos if v.settings.get("ProcessVersion", "11.0") == pv]
+        assert len(mine) >= 4, pv
+        assert all(float(v.settings["Saturation"]) < 0 and float(v.settings["Vibrance"]) < 0 for v in mine)
+    for v in combos + [BY_NAME["Cal PV15 Whites +25"], BY_NAME["Cal PV15 BW Neutral Mix"]]:
+        assert v.fits == () and len(v.settings) >= 2  # stays out of the fit and the measured shapes
+
+
+def test_cli_presets_only_missing_accepts_several_lut_folders(tmp_path):
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    for i, v in enumerate(VARIANTS):
+        if v.name != "Cal PV15 Whites +25":
+            ((first if i % 2 else second) / f"{v.name}.cube").write_text("", encoding="utf-8")
+    out = tmp_path / "next"
+    assert main(["presets", str(out), "--only-missing", str(first), "--only-missing", str(second)]) == 0
+    assert [p.stem for p in out.glob("*.xmp")] == ["Cal PV15 Whites +25"]
