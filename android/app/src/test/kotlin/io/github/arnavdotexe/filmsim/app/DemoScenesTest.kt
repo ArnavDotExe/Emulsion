@@ -10,8 +10,15 @@ class DemoScenesTest {
     private val assets = File("src/main/assets")
 
     @Test
-    fun threeScenesCoverLandscapePortraitAndStillLife() {
-        assertEquals(listOf("Landscape", "Portrait", "Still life"), DemoScene.entries.map { it.title })
+    fun threeScenesCoverLandscapePortraitAndStreet() {
+        assertEquals(listOf("Landscape", "Portrait", "Street"), DemoScene.entries.map { it.title })
+    }
+
+    @Test
+    fun everySceneIsCreditedToItsPhotographer() {
+        val credits = File(assets, "demo/CREDITS.md").readText()
+        for (scene in DemoScene.entries) assertTrue(scene.assetPath.substringAfterLast('/') in credits, "${scene.assetPath} is credited")
+        assertTrue("Pexels License" in credits)
     }
 
     @Test
