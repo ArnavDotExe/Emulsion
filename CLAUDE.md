@@ -160,6 +160,21 @@ python look/src/test/fixtures/make_conformance.py      # regenerate the fixtures
   prefix `/sdcard` paths with `MSYS_NO_PATHCONV=1`. Check colour by decoding screenshots and pulled
   JPEGs (PowerShell System.Drawing; the venv has no PIL) against colorlab's ΔE2000.
 
+### Releasing the app
+
+- v0.1.0 (2026-11-20) is on GitHub Releases: `Emulsion-0.1.0.apk`, signed with the **Emulsion release
+  key**, which lives OUTSIDE the repo in `%LOCALAPPDATA%\EmulsionToolselease-key\`
+  (`emulsion-release.jks`, alias `emulsion`, password in `password.txt` beside it). Never commit,
+  print or send it. If it is lost, no update can install over a release: back it up. The certificate's
+  SHA-256 is in the README.
+- Steps: `./gradlew :app:assemblePreview` (the R8-shrunk build), `zipalign -f -p 4`, `apksigner sign`
+  with the key (run it from PowerShell: the path has a space), `apksigner verify --print-certs`,
+  install it on the phone, then `gh release create vX.Y.Z <apk> --notes-file ...` with the file's
+  SHA-256 in the notes. Bump `versionName` in `android/app/build.gradle.kts` first. Installing it over
+  a debug-signed build needs an uninstall (saved photos stay).
+- README screenshots (`docs/screenshots/`) are taken from the release build with `adb exec-out
+  screencap`; crop the status bar off.
+
 ### Calibration loop (needs Lightroom; all output under `out/`)
 
 ```bash
