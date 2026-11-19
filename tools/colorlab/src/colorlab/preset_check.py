@@ -141,16 +141,19 @@ def _scores(prefix: str, preset: Preset, chart: np.ndarray, theirs: np.ndarray, 
 
 def compare_exports(export_dir: str | Path, kit_dir: str | Path, preset_dir: str | Path,
                     lut_dir: str | Path | None = None, seed: int = 0, done: Iterable[str] = (),
-                    on_row: Callable[[dict], None] | None = None) -> CompareReport:
+                    on_row: Callable[[dict], None] | None = None,
+                    profile_dirs: Iterable[str | Path] = ()) -> CompareReport:
     """Score Lightroom's exports of the kit against our renders (see the module notes).
 
     Presets named in ``done`` are skipped; ``on_row`` gets each row as soon as it is scored.
+    Looks are also resolved from the Look profiles under ``profile_dirs`` (Lightroom's built-in
+    looks are defined by the profiles Camera Raw installs).
     """
     done = set(done)
     kit = Path(kit_dir)
     manifest = json.loads((kit / "manifest.json").read_text(encoding="utf-8"))
     root = Path(preset_dir).resolve()
-    presets = {p.source.resolve().relative_to(root).as_posix(): p for p in load_preset_dir(root) if _normal_xmp(p)}
+    presets = {p.source.resolve().relative_to(root).as_posix(): p for p in load_preset_dir(root, profile_dirs) if _normal_xmp(p)}
     exports = {p.stem.lower(): p for p in Path(export_dir).glob("*") if p.suffix.lower() in (".tif", ".tiff")}
     report = CompareReport()
     for entry in manifest["entries"]:
@@ -219,7 +222,7 @@ def _compare_cli(args: argparse.Namespace) -> CompareReport:
         save(CompareReport(rows=rows))
 
     report = compare_exports(args.exports, args.kit, args.presets, args.luts, args.seed,
-                             done=[r["name"] for r in rows], on_row=on_row)
+                             done=[r["name"] for r in rows], on_row=on_row, profile_dirs=args.profiles)
     report.rows = rows
     save(report)
     return report
@@ -244,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("kit", type=Path)
     c.add_argument("presets", type=Path)
     c.add_argument("--luts", type=Path, help="Lightroom's baked .cube files, named after the presets")
+    c.add_argument("--profiles", type=Path, action="append", default=[],
+                   help="a folder of Look profiles to resolve built-in looks from (repeatable), for example "
+                        "Camera Raw's Settings/Adobe/Profiles")
     c.add_argument("--seed", type=int, default=0)
     c.add_argument("--json", type=Path, help="write the report here after every preset, and resume from it")
     c.add_argument("--fresh", action="store_true", help="ignore an existing --json report and score everything")
