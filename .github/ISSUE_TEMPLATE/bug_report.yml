@@ -1,0 +1,30 @@
+name: Bug report
+description: Something in Emulsion doesn't work or looks wrong
+labels: ["bug"]
+body:
+  - type: input
+    id: phone
+    attributes:
+      label: Phone and Android version
+      description: For example "Pixel 8, Android 16" or "Galaxy S21 FE, Android 14"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Emulsion version
+      description: The release you installed, for example 0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you saw, and what you expected instead. For a camera problem, say how the preview and the saved photo differed.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or photos (optional)
+      description: Drag them in here. For a crash, a `adb logcat` excerpt helps.
