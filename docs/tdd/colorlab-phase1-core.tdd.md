@@ -1452,6 +1452,82 @@ Emulsion to apply that profile rather than silently drop it.
 - `compare --profiles`: RED `5a9c410` (`compare_exports()` got an unexpected keyword argument
   `profile_dirs`), GREEN `a4df3c9` (510 pass, 98%).
 
+## Look profiles' table amount and hue/sat map (`adobe_table.HueSatMap`, `LookRef.table_amount`)
+
+Journey: as a photographer whose preset uses one of Lightroom's built-in creative profiles, I
+want Emulsion's version of that profile to match Lightroom's, including both of its tables.
+
+The user exported the decomposition bake (`out/decomp-kit`, collected to `out/decomp-luts`, all
+sRGB 16-bit): the worst preset's built-in look alone at amounts 100/90/50, the preset without
+its look, without the look and HSL, and without the look and grading, and the look kept with HSL
+removed. Scores are mean ΔE2000 on a 17³ grid against each LUT.
+
+- **Table amount.** With the RGB table alone, the best amounts were 0.70/0.65/0.35, which is the
+  look amount × the profile's `RGBTableAmount` (0.75). Applying the table at the look amount
+  alone scored 6.22/5.22/2.79.
+- **Hue/sat map.** The profile's `crs:LookTable` is a DNG HueSatMap. Across the 57 installed
+  profiles that carry one:
+  - type 0, version 1 or 2;
+  - hue, saturation and value divisions;
+  - float32 cells holding hue shift in degrees, saturation scale and value scale, with value
+    outermost and saturation innermost;
+  - a value-encoding flag; version 2 adds a float64 amount range.
+- **Where the map goes.** Applied after the RGB table, at the look amount, on linear ProPhoto,
+  the look-only bakes score 1.13/1.08/1.08. These were worse:
+
+  | Variant | Mean ΔE |
+  |---|---|
+  | Map before the table | 2.0 |
+  | Map in sRGB primaries | 3.3 |
+  | Map in Adobe RGB / P3 / Rec.2020 primaries | 1.3 / 1.5 / 1.2 |
+  | sRGB value indexing | 1.6 or more |
+  | Negated hue shift | 1.6 or more |
+  | Table blended in linear light | 1.5 |
+  | Table blended in ProPhoto gamma | 1.3 |
+
+  Scaling the map's cells by the amount instead of blending its output is the same, 1.08 vs 1.08.
+- **What the rest of the preset contributes** (decomposition variants, with the look):
+
+  | Variant | Mean ΔE |
+  |---|---|
+  | Look 90 with HSL removed | 1.59 |
+  | No look | 1.28 |
+  | No look, no grading | 1.17 |
+  | No look, no HSL | 0.96 |
+- **Whole preset, scene chart, blurred.**
+
+  | Step | Against the export | On Lightroom's baked LUT |
+  |---|---|---|
+  | Look unresolved | 4.88 | 1.62 |
+  | Look resolved, table at 0.9 | 2.62 | 1.62 |
+  | Now | 1.81 | 1.62 |
+- **The grid gap.** On the grid the whole preset is still 3.31 (median 1.90), because the Hald
+  extremes dominate:
+  - Bright saturated yellows: input (1, 1, 0.25) comes out near white, (0.98, 0.93, 0.88)
+    against Lightroom's (0.78, 0.59, 0.40).
+  - Magentas behave the same way.
+  - Without the look, the sRGB export clips these colours (ours (1, 0.96, 0.91), Lightroom
+    (1, 0.89, 0.71)). The look's compression makes them visible.
+  - Our Saturation +15 on the scene scale drives the low channel of such colours to 0 before HSL.
+    This is the same class as the known Whites + and Highlights + gaps for bright saturated
+    colours.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | A LookTable decodes (versions 1 and 2, value encoding, amount range), round-trips, and bad headers, sizes, encodings and blobs raise | `test_hue_sat_map_decodes_both_versions`, `test_hue_sat_map_rejects_bad_payloads`, `test_hue_sat_map_rejects_broken_blobs` | PASS |
+| 2 | The map leaves colours unchanged at identity; it shifts hue in degrees and scales saturation (clamped to 1) and value | `test_identity_hue_sat_map_leaves_colors_unchanged`, `test_hue_sat_map_shifts_hue_and_scales_saturation_and_value` | PASS |
+| 3 | It interpolates over value, wrapping hue and saturation cells, and can index values by their sRGB encoding | `test_hue_sat_map_interpolates_hue_saturation_and_value_cells`, `test_hue_sat_map_can_index_values_by_their_srgb_encoding` | PASS |
+| 4 | The amount blends linear output; the map works on ProPhoto from any space and rejects amounts outside its range | `test_hue_sat_map_amount_blends_linear_output_and_works_in_prophoto` | PASS |
+| 5 | A profile's map and `RGBTableAmount` are read and carried to looks (the look's own parameter wins); an inline map decodes; a bad map payload raises; an unreadable amount counts as 1 | `test_look_profiles_hue_sat_map_and_table_amount_are_read_and_carried_to_their_users` and three more in `test_preset.py` | PASS |
+| 6 | Render applies the table at look amount × table amount, then the map at the look amount; a profile rendered by itself uses its own table amount | `test_render_scales_the_look_table_by_its_table_amount`, `test_render_applies_the_looks_hue_sat_map_after_its_table_at_the_look_amount`, `test_render_of_a_look_profile_itself_uses_its_table_amount` | PASS |
+| 7 | The worst preset matches Lightroom's export within 1.9 (1.7 on its LUT), with the look from the installed profiles (private) | `tests/private/test_preset_check_vs_lightroom.py` | PASS (5) |
+
+- Hue/sat map: RED `0e072b3` (cannot import `HueSatMap`), GREEN `ee5817b` (525 pass, 98%;
+  it matches the scratch implementation on the installed profile to 4e-16).
+- Looks carry it: RED `8668dbe` (5 fail: no `table_amount`, no `hue_sat_map`), GREEN
+  `f3f155c` (530 pass, 98%). All 34 private tests pass, so no other preset changed: none of
+  the packs' profiles carry a map or a table amount.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

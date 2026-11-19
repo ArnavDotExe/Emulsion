@@ -69,7 +69,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 |---|---|
 | `colorspace` | RGB spaces, Bradford conversions, transfer curves |
 | `lut` | `Lut3D`, tetrahedral/trilinear lookup, `.cube`, Hald images |
-| `adobe_table` | Lightroom `crs:Table_*` RGBTable decode/encode/apply |
+| `adobe_table` | Lightroom `crs:Table_*` RGBTable decode/encode/apply; a look profile's `crs:LookTable` hue/sat/value map (`HueSatMap`, DNG HueSatMap semantics on linear ProPhoto) |
 | `preset` | `.xmp` / mobile `.dng` presets → typed `Preset`, look resolution (also from installed profile folders, `load_profiles`) |
 | `pipeline` | Reference model of a preset's global color in Lightroom order; `render()`, `render_lut()` |
 | `response` | Lightroom's **measured** slider shapes (exposure shoulder, white-balance stops per Bradford cone, tone and parametric curves per amount), stored in `data/lightroom_response.json` |
@@ -211,10 +211,13 @@ Lightroom quirks:
     38 presets and loses on none). `finish.spatial_settings` folds a look profile's own
     Highlights/Shadows (at the look's amount) into the local pass. Lightroom ignores a look's
     Sharpness. `compare` saves its JSON after every preset and resumes from it.
-    Gaps: one preset (4.88, 1.62 on its LUT) uses Adobe's built-in "Vintage 05" look, which now
+    Gaps: one preset (4.88, 1.62 on its LUT) uses Adobe's built-in "Vintage 05" look. It now
     resolves from Camera Raw's installed profiles (`load_preset_dir(profile_dirs=...)`,
-    `compare --profiles`): 2.62. Its `RGBTableAmount` and `LookTable` (a DNG hue/sat/value map)
-    aren't applied yet, waiting for the `out/decomp-kit` bake export; strong Highlights +
+    `compare --profiles`), with the table at look amount × `RGBTableAmount` and then the
+    profile's `LookTable` hue/sat map (`adobe_table.HueSatMap`): 1.81. Measured from the
+    decomposition bake in `out/decomp-luts`. On the grid, bright saturated yellows and magentas
+    are still too light under that look (scene-scale Saturation and HSL at the top of the
+    range); strong Highlights +
     Clarity + Dehaze presets are 1.5–2.5. Looks whose profile carries Highlights/Shadows have
     baked LUTs that hold a Hald-specific version of that pass.
   - `finish.apply_settings` runs every spatial pass in a preset in Lightroom's order (NR,
