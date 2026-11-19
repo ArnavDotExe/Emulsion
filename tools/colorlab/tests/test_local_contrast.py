@@ -11,6 +11,7 @@ from colorlab.local_contrast import (
     clarity,
     clarity_sigmas,
     guided_filter,
+    highlights_shadows,
     local_laplacian,
     main,
     texture,
@@ -147,3 +148,40 @@ def test_apply_to_image_and_cli_round_trip(tmp_path):
     got = tifffile.imread(dst) / 65535.0
     np.testing.assert_allclose(got, both, atol=2 / 65535)
     assert main(["apply", str(tmp_path / "missing.tif"), str(dst)]) == 1
+
+
+def _photo_like(lift: float, gain: float, seed: int = 0) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:96, 0:144] / np.array([96.0, 144.0])[:, None, None]
+    scene = 0.5 + 0.35 * np.sin(6 * xx) * np.cos(4 * yy) + 0.05 * rng.standard_normal((96, 144))
+    return np.clip(lift + gain * np.clip(scene, 0, 1), 0, 1)[..., None].repeat(3, axis=-1)
+
+
+def test_image_strength_is_one_on_the_scene_chart_and_follows_black_point_and_brightness():
+    # 15 photos exported from Lightroom: each wants a fixed fraction of the chart-fitted
+    # Highlights / Shadows change. Highlights' fraction falls as the black point (5th percentile
+    # of encoded luminance) rises; Shadows' rises with mean linear luminance.
+    from colorlab.local_contrast import image_strength
+    from colorlab.spatial_calibration import charts
+    h, s = image_strength(charts((1024, 1536))[0]["scene"])
+    assert abs(h - 1) < 0.05 and abs(s - 1) < 0.05
+    dark, bright = _photo_like(0.0, 0.5), _photo_like(0.35, 0.65)
+    hd, sd = image_strength(dark)
+    hb, sb = image_strength(bright)
+    assert hb < hd and sb > sd
+    assert sd < 1 < sb and hb < 0.6
+    for img in (np.zeros((8, 8, 3)), np.ones((8, 8, 3))):  # bounded at the extremes
+        hk, sk = image_strength(img)
+        assert 0.15 < hk < 1.3 and 0.03 < sk < 3.3
+
+
+def test_highlights_shadows_scales_each_sliders_change_by_its_strength():
+    img = _photo_like(0.05, 0.9)
+    np.testing.assert_allclose(highlights_shadows(img, -50, 40, strength=(1.0, 1.0)), highlights_shadows(img, -50, 40))
+    np.testing.assert_allclose(highlights_shadows(img, -50, 40, strength=(0.0, 0.0)), np.clip(img, 0, 1), atol=1e-12)
+    np.testing.assert_allclose(highlights_shadows(img, -50, 40, strength=(1.0, 0.0)), highlights_shadows(img, -50, 0))
+    half = highlights_shadows(img, -60, 0, strength=(0.5, 1.0)) - img
+    full = highlights_shadows(img, -60, 0) - img
+    assert 0.3 < np.abs(half).mean() / np.abs(full).mean() < 0.7
+    with pytest.raises(ParameterError):
+        highlights_shadows(img, -50, 0, strength=(-1.0, 1.0))

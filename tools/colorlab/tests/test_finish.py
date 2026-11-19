@@ -254,3 +254,12 @@ def test_render_preset_folds_in_the_look_profiles_highlights_and_shadows_before_
     img = edge(96)
     expected = render(preset, highlights_shadows(img, -15, 100))
     np.testing.assert_allclose(render_preset(preset, img), expected, atol=1e-6)  # local passes first by default
+
+
+def test_apply_settings_adapts_highlights_and_shadows_to_the_image():
+    from colorlab.local_contrast import image_strength
+    rng = np.random.default_rng(3)
+    img = np.clip(0.55 + 0.4 * rng.random((64, 96, 1)), 0, 1).repeat(3, axis=-1)  # a bright frame
+    out = apply_settings(img, {"Highlights2012": "-60", "Shadows2012": "+40"})
+    np.testing.assert_allclose(out, highlights_shadows(img, -60, 40, strength=image_strength(img)))
+    assert not np.allclose(out, highlights_shadows(img, -60, 40), atol=1e-3)
