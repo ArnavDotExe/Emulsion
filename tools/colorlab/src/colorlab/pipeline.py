@@ -470,17 +470,17 @@ def _color_stretch(shoulder: response.ExposureShoulder) -> tuple[Callable, Calla
     return forward, inverse
 
 
-def _to_color_scene(enc: np.ndarray) -> np.ndarray:
+def _to_color_scene(enc: np.ndarray, shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
     """Working-encoded values -> the scene scale of saturation, vibrance, HSL and B&W: that of
-    :func:`_to_scene`, with a finite top (:data:`COLOR_KNEE`)."""
-    forward, _ = _color_stretch(_response().exposure)
+    :func:`_to_scene`, with a finite top (:data:`COLOR_KNEE`). ``shoulder`` replaces the exposure's."""
+    forward, _ = _color_stretch(shoulder or _response().exposure)
     return rgb_tone(cs.decode(enc, WORKING_TRANSFER),
                     lambda x: forward(cs.encode(np.maximum(x, 0.0), WORKING_TRANSFER)))
 
 
-def _from_color_scene(scene: np.ndarray) -> np.ndarray:
+def _from_color_scene(scene: np.ndarray, shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
     """The inverse of :func:`_to_color_scene`."""
-    _, inverse = _color_stretch(_response().exposure)
+    _, inverse = _color_stretch(shoulder or _response().exposure)
     lin = rgb_tone(np.maximum(scene, 0.0), lambda y: cs.decode(np.maximum(inverse(y), 0.0), WORKING_TRANSFER))
     return cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
 
@@ -765,7 +765,7 @@ def grade_curves(shadows: Zone = Zone(), midtones: Zone = Zone(), highlights: Zo
 # --- saturation, vibrance, grayscale ----------------------------------------------------------------
 
 def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: float = 0.0,
-                        smooth: bool = False) -> np.ndarray:
+                        smooth: bool = False, process_version: tuple[int, int] = (0, 0)) -> np.ndarray:
     """Global saturation, then vibrance (-100..100), on scene-linear values as Lightroom does.
 
     Both run on scene-linear values (:func:`_to_scene`, the values Lightroom recovers from a
@@ -773,13 +773,20 @@ def saturation_vibrance(enc: np.ndarray, saturation: float = 0.0, vibrance: floa
     Vibrance, the first step of :func:`hsl_adjust`, rewrites each color's largest and smallest
     channel and keeps the middle one in place: it favours muted colors, spares skin hues when
     boosting, and keeps some color at -100.
+
+    From ``process_version`` 15.4, positive saturation runs on a scale with a stronger shoulder
+    (:data:`POSITIVE_SATURATION_SHOULDER`) around its own luminance (:data:`POSITIVE_SATURATION_PIVOT`).
     """
     _check("saturation", saturation, -100, 100)
     enc = _as_rgb(enc)
     if saturation:
         s = (saturation + 100) / 100
-        matrix = _OPPONENT_INV @ np.diag([1.0, s, s]) @ _OPPONENT
-        enc = _from_color_scene(np.maximum(_to_color_scene(enc) @ matrix.T, 0.0))
+        shoulder, opponent = None, _OPPONENT
+        if saturation > 0 and process_version >= (15, 4):
+            shoulder = response.ExposureShoulder(POSITIVE_SATURATION_SHOULDER, _response().exposure.strength)
+            opponent = _opponent(POSITIVE_SATURATION_PIVOT)
+        matrix = np.linalg.inv(opponent) @ np.diag([1.0, s, s]) @ opponent
+        enc = _from_color_scene(np.maximum(_to_color_scene(enc, shoulder) @ matrix.T, 0.0), shoulder)
     return hsl_adjust(enc, vibrance=vibrance, smooth=smooth)
 
 
@@ -788,6 +795,18 @@ _OPPONENT = np.array([[0.2880859375, 0.7119140625, 0.0],
                       [0.5, -0.5, 0.0],
                       [-0.072021484375, -0.177978515625, 0.25]])
 _OPPONENT_INV = np.linalg.inv(_OPPONENT)
+
+#: PV 15.4's positive saturation: the shoulder of its scene scale and the luminance it keeps, fitted
+#: on the PV 15.4 Saturation +15/+50/+100 bakes' ProPhoto exports (Lightroom's own PV 11 and PV 15.4
+#: Saturation bakes differ by 0.3-0.5 dE; negative amounts fit the PV 11 scale and weights)
+POSITIVE_SATURATION_SHOULDER = 3.2
+POSITIVE_SATURATION_PIVOT = (0.31, 0.71, -0.02)
+
+
+def _opponent(luminance: Sequence[float]) -> np.ndarray:
+    """Luminance with these weights and the two opponent axes (R - G) / 2, (B - luminance) / 4."""
+    w = np.asarray(luminance, dtype=np.float64)
+    return np.array([w, [0.5, -0.5, 0.0], [-w[0] / 4, -w[1] / 4, 0.25 - w[2] / 4]])
 
 
 def _vibrance(lo: np.ndarray, hi: np.ndarray, h: np.ndarray, amount: float) -> tuple[np.ndarray, np.ndarray]:
@@ -1021,7 +1040,7 @@ def _stage_grade(s: _Sliders, enc: np.ndarray) -> np.ndarray:
 
 
 def _stage_saturation(s: _Sliders, enc: np.ndarray) -> np.ndarray:
-    return saturation_vibrance(enc, s.number("Saturation"))
+    return saturation_vibrance(enc, s.number("Saturation"), process_version=_process_version(s.preset))
 
 
 def _stage_grayscale(s: _Sliders, enc: np.ndarray) -> np.ndarray:
