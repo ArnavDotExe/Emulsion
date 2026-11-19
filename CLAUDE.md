@@ -250,4 +250,6 @@ Lightroom quirks:
   - 8: the `.fsim.json` look format.
   - 9: the CLI.
   - After that, the Android app.
-- Deferred by the user: Fuji in-camera film simulations and Leica LUX.
+  - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own
+    look names, no Fujifilm trademarks).
+- Deferred by the user: Leica LUX.
