@@ -1668,6 +1668,61 @@ at best), so they stay.
 
 - RED `79e6aec` (the green's blue 0.035; Lightroom 0.002), GREEN `3f6de32` (blue 0.021; 536 pass, 98%).
 
+## Task 6 gaps without new bakes: negative Vibrance, colour NR, Dehaze +100
+
+Journey: as a photographer, I want the remaining single-slider gaps closed where the existing
+exports allow it, and the ones that can't be closed explained.
+
+### Negative Vibrance (`NEGATIVE_VIBRANCE_DARKEN`)
+
+On the existing Vibrance -50/-100 bakes (PV 11 sRGB, PV 15.4 sRGB and ProPhoto), the saturation that
+negative vibrance keeps matched Lightroom's within a few percent, but the colour's scene max came
+out too dark. At -100 Lightroom keeps a mid-saturated colour's max at 0.75 of its value, ours kept
+0.69; at -50 0.875 against 0.844. The darkening is now scaled by `NEGATIVE_VIBRANCE_DARKEN` = 0.88
+(0.6-0.94 tried; a shadow-fade exponent and the kept-saturation scale didn't help).
+
+| Bake | Before | After |
+|---|---|---|
+| Vibrance -100, PV 11 sRGB / PV 15.4 sRGB / PV 15.4 ProPhoto | 1.45 / 1.45 / 1.45 | 0.82 / 0.87 / 0.87 |
+| Vibrance -50, PV 11 sRGB / PV 15.4 sRGB / PV 15.4 ProPhoto | 0.64 / 0.73 / 0.73 | 0.36 / 0.48 / 0.48 |
+
+- The 5 private presets with negative Vibrance: median 0.774 -> 0.803, 3 better, 2 worse.
+- The one clearly worse (+0.29) combines Vibrance -40 with Saturation -44; no bake covers negative
+  Saturation with negative Vibrance yet (a candidate for the next bake session).
+- What's left at -100 is the darkening's shape: Lightroom's peaks at lower saturation than
+  `s(1 - s)`, and PV 11 and PV 15.4 differ for highly saturated colours.
+
+### Colour noise reduction: at its floor
+
+- On the levels chart all three amounts (25/50/100) change the image the same way (1.60).
+- Almost all of our 0.52 is chroma: Lightroom's chroma with our luma scores 0.06.
+- In the noisy patch Lightroom leaves 28% of the chroma noise (std 0.036 -> 0.010), ours 4%.
+- Its response is not a low-pass. It keeps the lowest frequencies (gain 0.7-0.8), removes
+  0.01-0.05 cycles/px, passes 0.08-0.24 partly (up to 0.36, a period of 5-6 px) and removes the rest.
+- At mid frequencies its output power is 27% of the input's but almost incoherent with it
+  (correlation with the input Cb 0.15).
+- Gaussians of σ 4-24, a luma-guided filter, and smoothing in linear YCbCr or linear
+  chromaticity all stay at 0.50-0.55.
+- Even the measured linear response applied by FFT (the best any linear filter can do) only
+  reaches 0.43. The rest isn't reproducible pixel for pixel, so the model is unchanged.
+
+### Dehaze +100: lightness inside flat areas
+
+- 88% of Lightroom's change is captured (1.60 of 13.3). With Lightroom's L* ours would score 0.36,
+  so the gap is lightness.
+- Its mean is small (-0.27), but inside each large flat patch ours is too dark toward the darker
+  neighbour and too light toward the brighter one, by up to 6 L*. Lightroom pushes each patch
+  away from its neighbours over a few hundred px.
+- A wide unsharp term on luma (σ 24-256, strength 0.05-0.3) doesn't help (1.597 at best). It
+  also adds contrast at edges, where Lightroom adds none.
+- Matching it needs an edge-aware large-scale model of the haze map; left as a known gap.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Negative vibrance darkens a mid-saturated colour's max by the measured strength | `test_negative_vibrance_darkens_a_colors_max_by_the_measured_strength` | PASS |
+
+- RED `94d9a1f` (cannot import `NEGATIVE_VIBRANCE_DARKEN`), GREEN `132b224` (537 pass, 98%).
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

@@ -201,7 +201,9 @@ Lightroom quirks:
       Paint Overlay 0.32. It holds at 768 and 3072 px.
     - Sharpening: 25/50/100 0.03/0.06/0.11 (to 0.49), Radius 3 0.10, Detail 100 0.17. It is fixed
       in pixels; Masking isn't modelled.
-    - Noise reduction: Luminance 0.16–0.30 (to 1.02), Color 0.52 (1.6).
+    - Noise reduction: Luminance 0.16–0.30 (to 1.02), Color 0.52 (1.6). Color is at its floor:
+      Lightroom's leftover chroma is mostly incoherent with the input, and even its measured linear
+      response only reaches 0.43 (see the TDD doc).
     - Grain: Lightroom's statistics, not its pattern. Its sd is within 0.5% (2.6% at 768 px) and
       its lag-1 within 0.02, with an effective size of `size · (width/1536)^1.8`.
     - Dehaze: −100 0.83 (23.4), ±25–50 0.31–0.71, +100 1.60 (13.3). Positive amounts mix in a dark
@@ -222,7 +224,7 @@ Lightroom quirks:
     ProPhoto exports) showed PV 15.4 HSL is right and gave the colour scale its knee: grid 3.31 ->
     2.92. PV 15.4's positive Saturation has its own shoulder and pivot
     (`pipeline.POSITIVE_SATURATION_SHOULDER` 3.2, `POSITIVE_SATURATION_PIVOT`): ProPhoto +50/+100
-    0.95/1.37 -> 0.77/1.01, grid 2.78. Left: Vibrance -100 1.45, bright yellows under that look;
+    0.95/1.37 -> 0.77/1.01, grid 2.78. Left: bright yellows under that look;
     strong Highlights +
     Clarity + Dehaze presets are 1.5–2.5. Looks whose profile carries Highlights/Shadows have
     baked LUTs that hold a Hald-specific version of that pass.
@@ -231,7 +233,8 @@ Lightroom quirks:
     image (`finish.render_preset` orders them around the look as above).
 - Biggest single-slider gaps:
   - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
-  - Vibrance −100 1.5 and Saturation +100 0.6 (PV 11; PV 15.4 has its own positive Saturation).
+  - Vibrance −100 0.82–0.87 (`pipeline.NEGATIVE_VIBRANCE_DARKEN` 0.88, from 1.45) and Saturation +100
+    0.6 (PV 11; PV 15.4 has its own positive Saturation).
   - Exposure ±2 is 0.8–0.9. Tone extremes are fixed: Blacks −100 0.39 and Whites −100 0.29 are the
     worst, from 2.6 and 2.3.
   - HSL is at most 0.67 (Lum Green −100), and B&W at most 0.46 (Mix Green +100).
@@ -245,7 +248,8 @@ Lightroom quirks:
     the format sets grain size.
   - Not ported: sublayer grain, dye clouds, micro-structure, spektrafilm's spectral color and profiles.
 - Then:
-  - 6b's gaps: Color NR (0.52), Dehaze +100 (1.60), and the whole-preset gaps above.
+  - 6b's gaps: Dehaze +100 (1.60: lightness inside flat areas, needs an edge-aware large-scale haze
+    map), Saturation − with Vibrance − (needs a bake), and the whole-preset gaps above.
   - 7: check against the Fuji DNG presets' embedded Lightroom previews.
   - 8: the `.fsim.json` look format.
   - 9: the CLI.
