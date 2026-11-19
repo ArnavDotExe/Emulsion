@@ -55,6 +55,13 @@ object CameraControls {
     fun evLabel(index: Int, step: Float): String =
         if (index == 0) "0" else (if (index > 0) "+" else "-") + String.format(Locale.US, "%.1f", abs(index * step))
 
+    /** The exposure chip's status: AUTO, the compensation (+0.7), or M under manual ISO or shutter. */
+    fun exposureChip(index: Int, step: Float, manual: Boolean): String = when {
+        manual -> "M"
+        index == 0 -> "AUTO"
+        else -> evLabel(index, step)
+    }
+
     /** The phone's roll in degrees from gravity along the screen's x and y axes (0 when upright). */
     fun levelAngle(x: Float, y: Float): Float = Math.toDegrees(atan2(x.toDouble(), y.toDouble())).toFloat()
 
