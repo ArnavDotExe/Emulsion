@@ -9,11 +9,15 @@ from colorlab.adobe_table import (
     Gamma,
     Gamut,
     Primaries,
+    HueSatMap,
     RGBTable,
+    apply_hue_sat_map,
     apply_rgb_table,
     decode_base85,
+    decode_hue_sat_map,
     decode_rgb_table,
     encode_base85,
+    encode_hue_sat_map,
     encode_rgb_table,
 )
 from colorlab.errors import ParameterError, TableDecodeError
@@ -191,3 +195,101 @@ def test_extend_gamut_preserves_out_of_gamut_residual():
     rgb = np.array([[1.4, -0.1, 0.5]])
     out = apply_rgb_table(table_from(lambda t: t, gamut=Gamut.EXTEND), rgb, cs.SRGB)
     np.testing.assert_allclose(out, rgb, atol=1e-5)
+
+
+# --- hue/saturation/value maps (crs:LookTable; DNG HueSatMap semantics) -----------------------
+
+def raw_hsv_payload(cells: np.ndarray, version: int = 2, encoding: int = 0, amounts=(0.0, 2.0),
+                    header: tuple[int, ...] | None = None, declared: int | None = None) -> str:
+    """Hand-build a LookTable string: type 0, version, hue/sat/value divisions, float32 cells
+    (value outermost, saturation innermost), then the value encoding (+ amount range in v2)."""
+    v, h, s, _ = cells.shape
+    tail = struct.pack("<I", encoding) + (struct.pack("<2d", *amounts) if version == 2 else b"")
+    body = struct.pack("<5I", *(header or (0, version, h, s, v))) + cells.astype("<f4").tobytes() + tail
+    return encode_base85(struct.pack("<I", len(body) if declared is None else declared) + zlib.compress(body))
+
+
+def uniform_cells(shift=0.0, sat=1.0, val=1.0, h=6, s=3, v=2) -> np.ndarray:
+    cells = np.empty((v, h, s, 3))
+    cells[...] = (shift, sat, val)
+    return cells
+
+
+def test_hue_sat_map_decodes_both_versions():
+    cells = RNG.random((3, 6, 4, 3))
+    m = decode_hue_sat_map(raw_hsv_payload(cells, version=1))
+    assert m.cells.shape == (3, 6, 4, 3) and not m.srgb_values and (m.min_amount, m.max_amount) == (0.0, 1.0)
+    np.testing.assert_allclose(m.cells, cells, atol=1e-6)
+    m2 = decode_hue_sat_map(raw_hsv_payload(cells, version=2, encoding=1, amounts=(0.0, 2.0)))
+    assert m2.srgb_values and (m2.min_amount, m2.max_amount) == (0.0, 2.0)
+    again = decode_hue_sat_map(encode_hue_sat_map(m2))
+    np.testing.assert_allclose(again.cells, cells, atol=1e-6)
+    assert again.srgb_values and again.max_amount == 2.0
+
+
+@pytest.mark.parametrize("bad", [
+    {"header": (1, 2, 6, 3, 2)},  # an RGB table, not a hue/sat map
+    {"header": (0, 3, 6, 3, 2)},  # unknown version
+    {"header": (0, 2, 6, 1, 2)},  # needs at least two saturation divisions
+    {"header": (0, 2, 9, 3, 2)},  # more cells declared than present
+    {"declared": 7},
+    {"encoding": 5},
+])
+def test_hue_sat_map_rejects_bad_payloads(bad):
+    with pytest.raises(TableDecodeError):
+        decode_hue_sat_map(raw_hsv_payload(uniform_cells(), **bad))
+
+
+def test_identity_hue_sat_map_leaves_colors_unchanged():
+    rgb = RNG.random((200, 3))
+    out = apply_hue_sat_map(HueSatMap(uniform_cells()), rgb, cs.PROPHOTO_RGB)
+    np.testing.assert_allclose(out, rgb, atol=1e-6)
+
+
+def test_hue_sat_map_shifts_hue_and_scales_saturation_and_value():
+    red = np.array([[0.8, 0.2, 0.2]])  # hue 0, saturation 0.75, value 0.8 (ProPhoto linear)
+    np.testing.assert_allclose(apply_hue_sat_map(HueSatMap(uniform_cells(shift=120.0)), red, cs.PROPHOTO_RGB),
+                               [[0.2, 0.8, 0.2]], atol=1e-6)
+    np.testing.assert_allclose(apply_hue_sat_map(HueSatMap(uniform_cells(sat=0.0)), red, cs.PROPHOTO_RGB),
+                               [[0.8, 0.8, 0.8]], atol=1e-6)
+    np.testing.assert_allclose(apply_hue_sat_map(HueSatMap(uniform_cells(sat=2.0)), red, cs.PROPHOTO_RGB),
+                               [[0.8, 0.0, 0.0]], atol=1e-6)  # saturation is clamped to 1
+    np.testing.assert_allclose(apply_hue_sat_map(HueSatMap(uniform_cells(val=0.5)), red, cs.PROPHOTO_RGB),
+                               [[0.4, 0.1, 0.1]], atol=1e-6)
+
+
+def test_hue_sat_map_interpolates_hue_saturation_and_value_cells():
+    cells = uniform_cells(h=6, s=2, v=2)
+    cells[1, ..., 2] = 0.5  # value scale 1 at value 0, 0.5 at value 1
+    gray = np.array([[0.5, 0.5, 0.5]])
+    np.testing.assert_allclose(apply_hue_sat_map(HueSatMap(cells), gray, cs.PROPHOTO_RGB), [[0.375] * 3], atol=1e-6)
+    cells = uniform_cells(h=6, s=2, v=1)
+    cells[0, 1, :, 0] = 60.0  # hue cell 1 (60 degrees) shifts by 60; the wrap from cell 5 back to 0 is smooth
+    orange = np.array([[0.8, 0.5, 0.2]])  # hue 30: halfway between cells 0 and 1
+    np.testing.assert_allclose(apply_hue_sat_map(HueSatMap(cells), orange, cs.PROPHOTO_RGB), [[0.8, 0.8, 0.2]], atol=1e-6)
+    cells = uniform_cells(h=6, s=3, v=1)
+    cells[0, :, 2, 1] = 0.0  # full saturation scaled to 0, half saturation untouched
+    out = apply_hue_sat_map(HueSatMap(cells), np.array([[0.8, 0.2, 0.2]]), cs.PROPHOTO_RGB)  # sat 0.75 -> x 0.5
+    np.testing.assert_allclose(out, [[0.8, 0.5, 0.5]], atol=1e-6)
+
+
+def test_hue_sat_map_can_index_values_by_their_srgb_encoding():
+    cells = uniform_cells(h=6, s=2, v=2)
+    cells[1, ..., 2] = 0.5
+    gray = np.array([[0.2, 0.2, 0.2]])
+    scale = 1 - 0.5 * float(cs.encode(np.array(0.2), cs.Transfer.SRGB))
+    out = apply_hue_sat_map(HueSatMap(cells, srgb_values=True), gray, cs.PROPHOTO_RGB)
+    np.testing.assert_allclose(out, [[0.2 * scale] * 3], atol=1e-6)
+
+
+def test_hue_sat_map_amount_blends_linear_output_and_works_in_prophoto():
+    red = np.array([[0.8, 0.2, 0.2]])
+    half = apply_hue_sat_map(HueSatMap(uniform_cells(sat=0.0)), red, cs.PROPHOTO_RGB, amount=0.5)
+    np.testing.assert_allclose(half, [[0.8, 0.5, 0.5]], atol=1e-6)
+    srgb = RNG.random((20, 3))
+    m = HueSatMap(uniform_cells(shift=30.0))
+    np.testing.assert_allclose(apply_hue_sat_map(m, srgb, cs.SRGB),
+                               cs.convert(apply_hue_sat_map(m, cs.convert(srgb, cs.SRGB, cs.PROPHOTO_RGB), cs.PROPHOTO_RGB),
+                                          cs.PROPHOTO_RGB, cs.SRGB), atol=1e-6)
+    with pytest.raises(ParameterError):
+        apply_hue_sat_map(m, red, cs.PROPHOTO_RGB, amount=1.5)
