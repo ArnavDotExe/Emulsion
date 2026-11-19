@@ -1918,6 +1918,77 @@ Errors exit 1 with `error: ...`; no command exits 2 with the usage.
   On the private presets, `info` resolves a pack's stubbed look from its own folder and `render`
   runs a mobile DNG preset on a photo.
 
+## The follow-up bakes, scored, and the B&W mixer at PV 15.4 (`pipeline.grayscale`)
+
+The user exported both follow-up kits: 27 Hald images twice (sRGB and ProPhoto; ICC profiles
+checked) and 83 spatial images, all collected with nothing missing or unedited
+(`out/next-luts`, `out/next-spatial-exports`). Mean dE2000 against Lightroom, ours / Lightroom's
+change where useful:
+
+- **PV 15.4 Whites +**: +25 0.16, +50 0.59 (bright saturated 1.41), +100 1.85. The gap grows
+  faster than the amount, so it is a shape (the lift of bright saturated colours' low channel),
+  not a strength.
+- **Saturation − with Vibrance −**: PV 11 0.26–0.60, PV 15.4 0.48–0.74. No change made.
+- **The built-in look × colour sliders**: the look alone 1.13 (bright saturated 2.01); with one
+  colour slider 0.57–1.33. The sliders add at most 0.2 to the look's own error, so the gap is the
+  look, not the interaction.
+- **Flats chart**: Dehaze −100 2.18 (24.4), −50 1.93, +50 1.80, +100 3.60 (12.4); Clarity +50
+  2.21 (2.84) and +100 4.06 (5.28); Highlights +50 1.72 and +100 2.83 (7.18). Inside large flat
+  areas our Clarity barely moves while Lightroom's does, and Dehaze + is off by a third.
+- **Pairs on the scene chart**: Highlights +50 with Clarity +50 1.01, with Dehaze +50 0.83;
+  Highlights −35 with Shadows +30 0.83, −50 with +50 1.40.
+- **Sharpening Masking**: 25 0.07, 100 0.21 (Lightroom's change 0.23: Masking 100 all but turns
+  sharpening off on the scene chart; Masking isn't modelled).
+- **Highlights/Shadows at PV 15.4 on the scene chart**: 0.10–1.03, the same as PV 11. The process
+  version doesn't change them.
+- **Highlights/Shadows on real photos (task 7)**: our change has the right shape but the wrong
+  strength. A least-squares scale `k` of our change against Lightroom's is nearly constant across
+  amounts for each photo (correlation 0.8–0.94):
+
+  | Photo | Character | Highlights k | Shadows k |
+  |---|---|---|---|
+  | 1 | bright (58% of pixels above Y 0.8) | 0.28 | 2.2 |
+  | 2 | dark (43% below Y 0.2) | 0.85 | 0.18 |
+  | 3 | flat midtones (p95 0.78) | 0.15 | 0.37 |
+  | 4 | contrasty | 0.45 | 0.7 |
+  | 5 | middle | 0.47 | 0.9 |
+
+  So Lightroom scales Highlights and Shadows per image. Five photos don't pin down what sets the
+  scale; `out/photo-strength-kit` (10 more photos from the mobile DNG presets, each at identity
+  and Highlights/Shadows ±50, PV 15.4) is built for the next Lightroom session.
+
+**PV 15.4 B&W.** The 9 PV 15.4 B&W bakes scored mean 0.985 / worst 1.64 on the PV 11 mixer (PV
+11's own bakes 0.30). Lightroom's PV 15.4 neutral mix is 0.52 away from its PV 11 one: identical
+on grays and in the hue-bin medians of the implied gray weight, but up to 1.3 L* darker for bright
+saturated colours (encoded max above 0.75, saturation above 0.75). And each band's slider fades
+faster away from its centre (Yellow +100 lifts the weight at 75 degrees by 0.35 against PV 11's
+0.57, Blue +100 at 255 degrees 0.23 against 0.53). What was tried, mean over the 9 bakes:
+
+| Change | Mean | Worst |
+|---|---|---|
+| PV 11 mixer | 0.985 | 1.64 |
+| PV 15.4 HSL's smooth hue model / spline tables / both | 1.364 / 1.060 / 1.243 | |
+| a band's move fades as (linear weight)^p: p 1.5 / 1.6 / 2.0 | 0.558 / 0.540 / 0.735 | 0.61 |
+| p 1.6 and a weaker exposure shoulder (3.2) | 0.701 | 0.80 |
+| p 1.6 and a stronger shoulder (12) | 0.481 | 0.56 |
+| p 1.6 and the colour scale's knee at 0.86 (from 0.94) | **0.452** | **0.56** |
+
+The knee at 0.75 or 0.97 is worse (0.691, 0.570). From PV 15.4, `grayscale` fades each band's
+move from its default as its linear weight to the power `BW_BAND_FALLOFF_PV15` = 1.6, and runs on
+a colour scale whose straight top starts at `BW_KNEE_PV15` = 0.86 (`_to_color_scene(knee=...)`).
+Below the knee and at a band's centre it is PV 11's mixer.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Before PV 15.4 the mixer is unchanged; from 15.4 grays stay, bright saturated colours darken, dark colours don't, and a band's lift is the same at its centre but under 0.75 of PV 11's 20 degrees out | `test_bw_at_pv_15_4_has_narrower_bands_and_a_lower_knee` | PASS |
+| 2 | `render` uses the PV 15.4 mixer for PV 15.4 presets | `test_render_uses_the_pv_15_4_mixer_for_pv_15_4_presets` | PASS |
+| 3 | The 9 PV 15.4 B&W bakes are under 0.6 each and 0.5 on average (local) | `tests/private/test_bw_vs_bakes.py::test_pv_15_4_bw_mixer_matches_its_bakes` | PASS |
+
+- RED `866b5b7` (2 fail: cannot import `BW_BAND_FALLOFF_PV15`; a PV 15.4 B&W preset renders the
+  same as PV 11). The GREEN commit also fixes the RED test's missing `pipeline` import and
+  uses darker test colours for the centre check: the bright one's output gray sat above the new
+  knee. GREEN: 591 public tests pass, 98%; `pipeline.py` 99%.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

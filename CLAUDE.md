@@ -157,7 +157,8 @@ Lightroom quirks:
   - Sliders follow a parabola to −2 and to default + 2.25, and negative weights darken along a
     perceptual curve.
   - B&W bakes are 0.34, and `K_MIXER` is gone.
-  - Process version 15.4's own hue table isn't reconstructed; it needs a B&W bake at PV 15.4.
+  - From PV 15.4 each band's move fades as its linear weight ^ `BW_BAND_FALLOFF_PV15` (1.6), on a
+    colour scale with its knee at `BW_KNEE_PV15` (0.86): the 9 PV 15.4 B&W bakes 0.985 -> 0.452.
 - ProPhoto exports of all 147 bakes are in `out/cal-exports-prophoto` (16-bit, gamma 1.8). They
   show that Lightroom's sRGB export is a plain clip of its ProPhoto result (0.006 ΔE), with no
   gamut mapping, and they keep out-of-sRGB colors for checking the model.
@@ -260,13 +261,16 @@ Lightroom quirks:
     the format sets grain size.
   - Not ported: sublayer grain, dye clouds, micro-structure, spektrafilm's spectral color and profiles.
 - Then:
-  - The next Lightroom session: two kits are built (`out/BAKE_SESSION.txt`). Then collect:
-    `colorlab bake collect ../../out/next-global-kit/exports ../../out/next-global-kit ../../out/next-luts`
-    (ProPhoto exports in `next-global-kit/exports-prophoto`) and
-    `colorlab spatial collect ../../out/next-spatial-kit/exports ../../out/next-spatial-kit ../../out/next-spatial-exports`.
-    They cover Dehaze +100 and Clarity + on flats, Saturation − with Vibrance −, PV 15.4 Whites +
-    and B&W, the look × colour sliders, Highlights + on bright colours, slider pairs, Masking, and
-    Highlights/Shadows on real photos (task 7's adaptive Highlights).
+  - The follow-up kits are baked and collected (`out/next-luts`, `out/next-spatial-exports`); scores
+    in the TDD doc. Found: Highlights/Shadows on real photos have the right shape but a per-image
+    strength (Highlights 0.15–0.85, Shadows 0.18–2.2 of the chart response, constant across
+    amounts). Inside flat areas Clarity + and Dehaze + are off (flats 4.06, 3.60); PV 15.4
+    Whites + is a shape gap (+25 0.16, +50 0.59); the built-in look's gap is the look, not the
+    colour sliders; Masking isn't modelled (Masking 100 0.21).
+  - The next Lightroom session: `out/photo-strength-kit` (50 images: 10 more photos ×
+    identity, Highlights/Shadows ±50 at PV 15.4; `out/BAKE_SESSION.txt`), to find what sets the
+    per-image strength. Collect:
+    `colorlab spatial collect ../../out/photo-strength-kit/exports ../../out/photo-strength-kit ../../out/photo-strength-exports`.
   - After that, the Android app.
   - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own
     look names, no camera-maker trademarks).
