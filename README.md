@@ -46,6 +46,17 @@ pytest --cov
 
 Python 3.11 or newer. Coverage must stay at or above 80%.
 
+The install adds a `colorlab` command (also `python -m colorlab`):
+
+```bash
+colorlab info my-preset.xmp                       # the look and the sliders a preset moves
+colorlab render my-preset.xmp photo.tif out.tif   # the whole preset on an sRGB TIFF
+colorlab lut my-preset.xmp my-look.cube           # its global colour as a 3D LUT
+colorlab look my-preset.xmp my-look.fsim.json     # an Emulsion look file
+colorlab apply my-look.fsim.json photo.tif out.tif
+colorlab --help                                   # and the calibration tools
+```
+
 ## Credits
 
 Film halation and grain (`tools/colorlab`, `colorlab.film`) are ported from

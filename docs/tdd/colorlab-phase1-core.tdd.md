@@ -2,8 +2,7 @@
 
 **Source plan:** the Phase 1 "Python color lab" plan agreed in the planning session.
 This report covers tasks 1–5 (repo setup, color spaces, LUTs, the RGBTable decoder and
-the preset reader) and task 6a (global color pipeline). Still open: the command-line tool (9); the checks against Lightroom's DNG previews (7) and the
-`.fsim.json` look format (8) are done.
+the preset reader) and task 6a (global color pipeline). Tasks 7 (DNG previews), 8 (`.fsim.json`) and 9 (the `colorlab` command) are done too.
 
 ## User journeys
 
@@ -1835,6 +1834,89 @@ Every preset comes out at least 3.9 ΔE closer to Lightroom than the unedited ph
 | 1 | All 15 DNG presets match their previews at median < 2.7, mean < 2.75, worst < 4.3, each at least 3.5 closer than the unedited photo (private) | `tests/private/test_dng_previews.py` | PASS |
 
 No code changed: the check found no fix that holds without new bakes.
+
+## Follow-up bake kits for the open gaps (`calibration._followups`, `spatial_calibration.FOLLOWUP_VARIANTS`, `photo_variants`)
+
+Journey: as the person running Lightroom, I want every remaining bake in one session, built and
+documented, so the gaps that need Lightroom's answers can close in one pass.
+
+- **Global (Hald) follow-ups**, 19 calibration variants. (The GREEN commit message says 27; the
+  true count is 19.)
+  - Whites +25/+50 at PV 15.4: is the +100 gap (1.85) a shape or a strength?
+  - The B&W mixer at PV 15.4: a neutral mix and each band at +100, for 15.4's own hue table.
+  - Saturation − with Vibrance − at PV 11 and PV 15.4: −50/−50, −100/−50, −50/−100, −25/−50.
+    One private preset with both got worse after the negative-vibrance fix.
+
+  Each sets two or more keys, so the fit and the measured shapes are unchanged.
+  `presets --only-missing` is now repeatable, and a variant is written when no folder has its
+  cube: `--only-missing out/cal-luts --only-missing out/brightsat-luts` gives exactly these 19.
+- **Spatial follow-ups**, 28 chart variants.
+  - The new `flats` chart: 12 grays and 12 colours, 6 of them bright saturated, in 256 px
+    patches. It carries Dehaze ±50/±100 (lightness inside flat areas), Clarity +50/+100 (the
+    wide one-sided contrast), and Highlights +50/+100 (bright saturated colours moving toward
+    white).
+  - Pairs on the scene chart: Highlights +50 with Clarity +50 or Dehaze +50, and Highlights −
+    with Shadows + (−35/+30, −50/+50).
+  - Sharpening Masking 25/100.
+  - Highlights/Shadows ±25/50/100 at PV 15.4.
+  - Identities for flats and for the scene chart at PV 15.4.
+- **Real photos.** `photo_variants(name, size)` gives 11 PV 15.4 variants per photo: identity,
+  Highlights −100/−50/−25/+50/+100, Shadows −50/+25/+50/+100, and Highlights −35 with Shadows +30.
+  They test whether Lightroom adapts these sliders to the image (task 7).
+  `write_spatial_kit(photos=...)` and `kit --followup --photos DIR` take the photos. The base kit
+  is unchanged; its identities stay the three original charts.
+- **Built kits** (private, under `out/`; `out/BAKE_SESSION.txt` is the one-page guide):
+  - `out/next-global-kit`: 27 Hald images, about 41 MB, exported twice (sRGB and ProPhoto). It
+    holds the 19 variants and 8 private ones: the worst preset's built-in look at 100 alone and
+    with one colour slider each (Saturation ±50, Vibrance ±50, yellow hue, saturation and
+    luminance), to measure the look × colour-slider interaction.
+  - `out/next-spatial-kit`: 83 images, about 516 MB. It holds the 28 chart variants and 5 photos
+    taken from the mobile DNG presets: the brightest, the darkest, the flattest, the most
+    contrasty and a middle one.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | The global follow-ups exist with their exact settings and stay out of the fit | `test_followup_variants_cover_the_open_global_bakes` | PASS |
+| 2 | `--only-missing` takes several folders | `test_cli_presets_only_missing_accepts_several_lut_folders` | PASS |
+| 3 | The flats chart has 12+ grays from below 0.05 to above 0.95, 6+ bright saturated colours, patches of 200+ px | `test_flats_chart_has_large_gray_steps_and_bright_saturated_colors` | PASS |
+| 4 | The spatial follow-ups cover flats, pairs, masking and PV 15.4 local tone, with no name shared with the base kit | `test_followup_variants_cover_the_open_spatial_bakes` | PASS |
+| 5 | Photo variants are PV 15.4 Highlights/Shadows moves with an identity, at the photo's size; bad names raise | `test_photo_variants_move_highlights_and_shadows_at_pv_15_4_on_the_photo` | PASS |
+| 6 | The kit writes photos with their settings, refuses missing or mis-sized photos, and the CLI builds the follow-up kit | `test_kit_writes_photos_with_their_settings_and_cli_builds_the_followup_kit` | PASS |
+
+- RED `d8b560f` (6 fail: no `Cal PV15 Whites +25`, `--only-missing` takes one folder, no
+  `flats`, cannot import `FOLLOWUP_VARIANTS`/`photo_variants`), GREEN `5dc4000` (573 pass, 98%).
+
+## The `colorlab` command (task 9, `colorlab.cli`)
+
+Journey: as a photographer or contributor, I want one command for the color lab, so I don't need
+to know which module holds which tool.
+
+| Command | Does |
+|---|---|
+| `colorlab render PRESET IN.tif OUT.tif [--global-only] [--seed N]` | the whole preset (`finish.render_preset`), or only its global colour |
+| `colorlab lut PRESET OUT.cube [--size 33]` | the global colour as a `.cube` |
+| `colorlab look PRESET OUT.fsim.json [--name] [--size]` | a `.fsim.json` look |
+| `colorlab apply LOOK IN.tif OUT.tif [--seed N]` | a `.fsim.json` look or a `.cube` on a TIFF |
+| `colorlab info PRESET` | name, group, process version, the look (and whether it resolved), the settings it moves |
+| `colorlab bake / calibration / spatial / check / finish / film / local-contrast / fsim ...` | that module's own tool, arguments passed through |
+
+Presets are `.xmp` or mobile `.dng`. A stubbed look resolves from the Look presets in the
+preset's own folder and in any `--profiles` folders. `python -m colorlab` is the same command.
+Errors exit 1 with `error: ...`; no command exits 2 with the usage.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | `render` equals `render_preset` (and `--global-only` equals `render`) to 1e-4 | `test_render_applies_the_whole_preset_or_only_its_global_colour` | PASS |
+| 2 | `lut` writes `render_lut` as a `.cube` | `test_lut_bakes_the_global_colour_into_a_cube` | PASS |
+| 3 | `look` then `apply` round-trips; `apply` takes a `.cube` too | `test_look_then_apply_round_trips_a_preset_and_apply_takes_a_cube_too` | PASS |
+| 4 | `info` shows the process version, the look and the moved sliders | `test_info_names_the_preset_its_look_and_the_sliders_it_moves` | PASS |
+| 5 | Stubbed looks resolve from `--profiles` and from the preset's folder | `test_stubbed_looks_resolve_from_the_presets_folder_and_profile_folders` | PASS |
+| 6 | Every module tool is reachable, and every module with a command line is listed | `test_every_module_tool_is_reachable_under_one_name` (8), `test_tools_cover_every_module_with_a_command_line` | PASS |
+| 7 | Errors exit 1, no command exits 2, `--version`, `python -m colorlab` | `test_errors_exit_1_with_a_message_and_no_command_shows_usage`, `test_python_dash_m_colorlab_runs_the_same_command` | PASS |
+
+- RED `2832b36` (cannot import `colorlab.cli`), GREEN `3aa2f6b` (589 pass, 98%; `cli.py` 99%).
+  On the private presets, `info` resolves a pack's stubbed look from its own folder and `render`
+  runs a mobile DNG preset on a photo.
 
 ## Coverage and known gaps
 

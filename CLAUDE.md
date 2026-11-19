@@ -73,8 +73,8 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `preset` | `.xmp` / mobile `.dng` presets → typed `Preset`, look resolution (also from installed profile folders, `load_profiles`) |
 | `pipeline` | Reference model of a preset's global color in Lightroom order; `render()`, `render_lut()` |
 | `response` | Lightroom's **measured** slider shapes (exposure shoulder, white-balance stops per Bradford cone, tone and parametric curves per amount), stored in `data/lightroom_response.json` |
-| `calibration` | 147 single-slider calibration presets; `response` measures shapes from bakes, `fit` fits `K_SCENE`, the one remaining strength |
-| `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `collect` checks and copies the exports |
+| `calibration` | 147 single-slider calibration presets plus PV 15.4 checks and follow-ups (`_followups`: PV 15.4 Whites +25/+50 and B&W, Saturation − with Vibrance −); `response` measures shapes from bakes, `fit` fits `K_SCENE`, the one remaining strength |
+| `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `kit --followup` (a `flats` chart, slider pairs, masking, PV 15.4 local tone) and `--photos DIR` (`photo_variants`: Highlights/Shadows on real photos); `collect` checks and copies the exports |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `film` | Halation (scatter + bounces, scene-anchored highlight boost) and particle grain, sized in µm on the film; ported from spektrafilm and darktable (credited in the header); `apply` CLI for TIFFs |
 | `local_contrast` | Highlights/Shadows (a tone table over the pixel and a Gaussian base of width/32, per amount, in `data/local_tone.json`), Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr) and Dehaze (a monotone local tone table and a linear-light color gain, mixed for positive amounts with a dark channel prior), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
@@ -82,6 +82,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `preset_check` | Whole-preset check: `kit` writes full preset copies (geometry neutralized) on the scene chart as embedded sidecars; `compare` scores Lightroom's exports against `finish.render_preset` (global, spatial passes after or before the look, blurred, and on Lightroom's baked LUTs), saving its JSON per preset and resuming from it |
 | `metrics` | sRGB → Lab, CIEDE2000 |
 | `fsim` | The `.fsim.json` look format (v1): a look's global colour as a base64 uint16 3D LUT (`.cube` order) plus its local, vignette and grain settings in Lightroom slider units; `from_preset`, strict `loads`/`read` (rejects unknown keys, ranges, versions, bad LUT data, over 8 MiB), `apply` (local passes, vignette, LUT, grain); `from-preset`/`apply` CLI |
+| `cli` | The `colorlab` command (also `python -m colorlab`): `render`, `lut`, `look`, `apply`, `info`, and every module's tool by name (`bake`, `calibration`, `spatial`, `check`, `finish`, `film`, `local-contrast`, `fsim`); stubbed looks resolve from the preset's folder and `--profiles` |
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
 Whites/Blacks (with exposure), saturation, vibrance + HSL (or B&W), then contrast, parametric, point
@@ -239,6 +240,7 @@ Lightroom quirks:
   real photos: removing it helps 5 of 12, bright photos want 0–50% of it and dark ones all of it,
   so Lightroom's Highlights is likely image-adaptive. Not the process version or the slider
   order. Needs bakes of Highlights/Shadows on several photos at PV 15.4.
+- Task 9 is done: the `colorlab` command (`colorlab.cli`, 3aa2f6b).
 - Task 8 is done: `colorlab.fsim` (ee95db8). All 59 private presets round-trip and render like
   `render_preset` (mean ΔE median 0.035, worst 0.097); a 33-point look file is about 280 KiB.
 - Biggest single-slider gaps:
@@ -258,9 +260,13 @@ Lightroom quirks:
     the format sets grain size.
   - Not ported: sublayer grain, dye clouds, micro-structure, spektrafilm's spectral color and profiles.
 - Then:
-  - 6b's gaps: Dehaze +100 (1.60: lightness inside flat areas, needs an edge-aware large-scale haze
-    map), Saturation − with Vibrance − (needs a bake), and the whole-preset gaps above.
-  - 9: the CLI.
+  - The next Lightroom session: two kits are built (`out/BAKE_SESSION.txt`). Then collect:
+    `colorlab bake collect ../../out/next-global-kit/exports ../../out/next-global-kit ../../out/next-luts`
+    (ProPhoto exports in `next-global-kit/exports-prophoto`) and
+    `colorlab spatial collect ../../out/next-spatial-kit/exports ../../out/next-spatial-kit ../../out/next-spatial-exports`.
+    They cover Dehaze +100 and Clarity + on flats, Saturation − with Vibrance −, PV 15.4 Whites +
+    and B&W, the look × colour sliders, Highlights + on bright colours, slider pairs, Masking, and
+    Highlights/Shadows on real photos (task 7's adaptive Highlights).
   - After that, the Android app.
   - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own
     look names, no camera-maker trademarks).
