@@ -280,3 +280,39 @@ def test_load_preset_dir_resolves_builtin_looks_from_installed_profile_folders(t
     [user] = load_preset_dir(presets, profile_dirs=[tmp_path / "profiles", tmp_path / "missing"])
     assert user.look.resolved and user.look.source.uuid == "981D"
     assert user.look.table.lut.table[0, 0, 0, 0] == pytest.approx(0.75, abs=1e-4)
+
+
+
+def map_text(shift: float = 0.0) -> str:
+    from colorlab.adobe_table import HueSatMap, encode_hue_sat_map
+    cells = np.empty((2, 6, 2, 3)); cells[...] = (shift, 1.0, 1.0)
+    return encode_hue_sat_map(HueSatMap(cells))
+
+
+def test_look_profiles_hue_sat_map_and_table_amount_are_read_and_carried_to_their_users():
+    profile = parse_preset(make_xmp({"PresetType": "Look", "UUID": "B1", "RGBTable": "T", "Table_T": table_text(),
+                                     "LookTable": "M", "Table_M": map_text(12.0), "RGBTableAmount": "0.75"}))
+    assert profile.table_amount == 0.75 and profile.look_table.cells[0, 0, 0, 0] == pytest.approx(12.0)
+    assert not profile.has("Table_M")
+    assert parse_preset(make_xmp()).table_amount == 1.0 and parse_preset(make_xmp()).look_table is None
+    builtin = """<crs:Look><rdf:Description crs:Name="B" crs:Amount="0.9" crs:UUID="B1">
+       <crs:Parameters crs:RGBTable="T" crs:LookTable="M" crs:RGBTableAmount="0.5"/></rdf:Description></crs:Look>"""
+    stub = """<crs:Look><rdf:Description crs:Name="B" crs:Amount="1" crs:UUID="B1" crs:Stubbed="true"/></crs:Look>"""
+    users = resolve_looks([parse_preset(make_xmp({"UUID": "U1"}, children=builtin)),
+                           parse_preset(make_xmp({"UUID": "U2"}, children=stub))], [profile])
+    a, b = (u.look for u in users)
+    assert a.hue_sat_map is profile.look_table and b.hue_sat_map is profile.look_table
+    assert a.table_amount == 0.5 and b.table_amount == 0.75  # the look's own parameter wins over its profile's
+    assert parse_preset(make_xmp(children=stub)).look.table_amount == 1.0
+
+
+def test_inline_look_hue_sat_map_is_decoded():
+    look = f"""<crs:Look><rdf:Description crs:Name="Inline" crs:Amount="1" crs:UUID="11"
+       crs:LookTable="AA" crs:Table_AA="{map_text(5.0)}"/></crs:Look>"""
+    p = parse_preset(make_xmp(children=look))
+    assert p.look.hue_sat_map.cells[1, 2, 1, 0] == pytest.approx(5.0) and p.look.resolved
+
+
+def test_bad_hue_sat_map_payload_raises():
+    with pytest.raises(PresetFormatError, match="Table_M"):
+        parse_preset(make_xmp({"PresetType": "Look", "LookTable": "M", "Table_M": "0000"}))

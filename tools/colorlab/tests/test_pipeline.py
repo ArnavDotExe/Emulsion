@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from colorlab import colorspace as cs
-from colorlab.adobe_table import Gamma, Gamut, Primaries, RGBTable
+from colorlab.adobe_table import Gamma, Gamut, HueSatMap, Primaries, RGBTable, apply_hue_sat_map, apply_rgb_table
 from colorlab.errors import ParameterError
 from colorlab.lut import Lut3D
 from colorlab.pipeline import (
@@ -683,6 +683,29 @@ def test_render_applies_the_look_table_with_its_amount():
     x = grid(5)
     np.testing.assert_allclose(render(inverting_look(1.0), x), 1.0 - x, atol=1e-4)
     np.testing.assert_allclose(render(inverting_look(0.5), x), np.full_like(x, 0.5), atol=1e-4)
+
+
+def test_render_scales_the_look_table_by_its_table_amount():
+    x = grid(5)
+    np.testing.assert_allclose(render(inverting_look(1.0, {"RGBTableAmount": "0.5"}), x), np.full_like(x, 0.5), atol=1e-4)
+
+
+def test_render_applies_the_looks_hue_sat_map_after_its_table_at_the_look_amount():
+    cells = np.empty((2, 6, 2, 3)); cells[...] = (10.0, 0.8, 0.9)
+    cells[1, :, 1] = (-10.0, 1.1, 1.0)
+    hsm = HueSatMap(cells)
+    lut = Lut3D(0.1 + 0.8 * Lut3D.identity(5).table)  # a mild table that stays inside sRGB
+    table = RGBTable(lut, Primaries.SRGB, Gamma.SRGB, Gamut.CLIP, 0.0, 1.0)
+    profile = parse_preset(make_xmp({"PresetType": "Look", "RGBTableAmount": "0.75"}))
+    look = LookRef(name="M", uuid="M", amount=0.8, stubbed=True, table=table, source=profile, hue_sat_map=hsm)
+    preset = dataclasses.replace(parse_preset(make_xmp()), look=look)
+    x = 0.3 + 0.4 * grid(5)
+    lin = cs.decode(x, cs.Transfer.SRGB)
+    expected = apply_hue_sat_map(hsm, apply_rgb_table(table, lin, cs.SRGB, amount=0.6), cs.SRGB, amount=0.8)
+    np.testing.assert_allclose(render(preset, x), cs.encode(np.clip(expected, 0, 1), cs.Transfer.SRGB), atol=2e-4)
+    alone = dataclasses.replace(preset, look=dataclasses.replace(look, table=None))
+    np.testing.assert_allclose(render(alone, x), cs.encode(np.clip(apply_hue_sat_map(hsm, lin, cs.SRGB, 0.8), 0, 1),
+                                                           cs.Transfer.SRGB), atol=2e-4)
 
 
 def test_render_applies_the_look_profiles_own_settings():
