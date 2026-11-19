@@ -1086,3 +1086,34 @@ def test_negative_vibrance_darkens_a_colors_max_by_the_measured_strength():
     mid = 0.25 * (2 - 0.25)
     np.testing.assert_allclose(new_hi, 0.2 * (1 - NEGATIVE_VIBRANCE_DARKEN * 0.8 * mid), rtol=1e-12)
     assert 0.8 < NEGATIVE_VIBRANCE_DARKEN < 0.95
+
+
+def test_bw_at_pv_15_4_has_narrower_bands_and_a_lower_knee():
+    # PV 15.4 B&W bakes: the neutral mix is PV 11's except bright saturated colours come out up to
+    # 1.3 L* darker, and a band's slider fades faster away from its centre (Yellow +100 at 75
+    # degrees lifts 0.35 against 0.57, Blue +100 at 255 degrees 0.23 against 0.53).
+    from colorlab.pipeline import BW_BAND_FALLOFF_PV15, BW_KNEE_PV15, COLOR_KNEE, grayscale
+    assert 0.8 < BW_KNEE_PV15 < COLOR_KNEE and 1.0 < BW_BAND_FALLOFF_PV15 < 2.0
+    enc = lambda lin: cs.encode(np.asarray(lin, float), pipeline.WORKING_TRANSFER)
+    mixed = enc([[0.5, 0.4667, 0.1], [0.4, 0.5, 0.1], [0.3, 0.3, 0.3], [0.2, 0.05, 0.6]])  # 55 deg, 75 deg, gray, blue
+    for pv in ((0, 0), (11, 0)):
+        np.testing.assert_allclose(grayscale(mixed, {"yellow": 100}, process_version=pv), grayscale(mixed, {"yellow": 100}))
+    old, new = grayscale(mixed), grayscale(mixed, process_version=(15, 4))
+    np.testing.assert_allclose(new[2], mixed[2])  # grays stay
+    bright = enc([[0.95, 0.5, 0.05], [0.1, 0.9, 0.95]])
+    assert np.all(grayscale(bright, process_version=(15, 4))[:, 0] < grayscale(bright)[:, 0] - 0.005)
+    dark = enc([[0.05, 0.02, 0.01]])
+    np.testing.assert_allclose(grayscale(dark, process_version=(15, 4)), grayscale(dark), atol=1e-9)  # below the knee
+    lift = lambda pv: grayscale(mixed, {"yellow": 100}, process_version=pv)[:, 0] - grayscale(mixed, process_version=pv)[:, 0]
+    l11, l15 = lift((11, 0)), lift((15, 4))
+    assert 0.8 < l15[0] / l11[0] < 1.25  # at the centre, as before
+    assert l15[1] < 0.75 * l11[1]  # 20 degrees out, much less
+    assert abs(l15[3]) < 1e-9 and abs(l11[3]) < 1e-9
+
+
+def test_render_uses_the_pv_15_4_mixer_for_pv_15_4_presets():
+    attrs = {"ConvertToGrayscale": "True", "GrayMixerYellow": "+100"}
+    rgb = np.array([[0.9, 0.7, 0.2]])
+    p11 = parse_preset(make_xmp({"ProcessVersion": "11.0", **attrs}))
+    p15 = parse_preset(make_xmp({"ProcessVersion": "15.4", **attrs}))
+    assert not np.allclose(render(p11, rgb), render(p15, rgb), atol=1e-3)
