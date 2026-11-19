@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/** The films tab's catalogue: kinds, folded grain variants, order and hints. */
+/** The films tab's catalogue: houses, folded grain variants, order and hints. */
 class FilmCatalogTest {
     private val looks = listOf(
         "Portrait 400" to "The classic portrait colour negative, 400 speed. Neutral, natural contrast.",
@@ -24,21 +24,29 @@ class FilmCatalogTest {
     )
 
     @Test
-    fun eachLookGetsTheKindOfFilmItEvokes() {
-        val kinds = FilmCatalog.build(looks).associate { it.name to it.kind }
-        assertEquals(FilmKind.NEGATIVE, kinds["Portrait 400"])
-        assertEquals(FilmKind.NEGATIVE, kinds["Analog 1"])
-        assertEquals(FilmKind.NEGATIVE, kinds["Neg Standard Holiday"])
-        assertEquals(FilmKind.SLIDE, kinds["Slide Clean Blue"])
-        assertEquals(FilmKind.SLIDE, kinds["Chrome 64"])
-        assertEquals(FilmKind.MONO, kinds["Fine Mono 100"])
-        assertEquals(FilmKind.CINE, kinds["Cine 500T"])
-        assertEquals(FilmKind.INSTANT, kinds["Instant Muted"])
-        assertEquals(FilmKind.VINTAGE, kinds["Colour 1940s"])
-        assertEquals(FilmKind.VINTAGE, kinds["Retro Fade 1"])
-        assertEquals(FilmKind.VINTAGE, kinds["Infrared 16"])
-        assertEquals(FilmKind.CREATIVE, kinds["Sepia Recipe"])
-        assertEquals(FilmKind.CREATIVE, kinds["Vivid"])
+    fun eachLookBelongsToTheHouseWhoseFilmItEvokes() {
+        val houses = FilmCatalog.build(looks).associate { it.name to it.house }
+        assertEquals(House.GOLDBOX, houses["Portrait 400"])
+        assertEquals(House.GOLDBOX, houses["Chrome 64"])
+        assertEquals(House.GOLDBOX, houses["Cine 500T"])
+        assertEquals(House.GOLDBOX, houses["Infrared 16"])
+        assertEquals(House.GREENLEAF, houses["Neg Standard Holiday"])
+        assertEquals(House.GREENLEAF, houses["Slide Clean Blue"])
+        assertEquals(House.ARGENTUM, houses["Fine Mono 100"])
+        assertEquals(House.SNAPSHOT, houses["Instant Muted"])
+        assertEquals(House.OLD_EUROPE, houses["Colour 1940s"])
+        assertEquals(House.RECIPES, houses["Sepia Recipe"])
+        assertEquals(House.STUDIO, houses["Analog 1"])
+        assertEquals(House.STUDIO, houses["Retro Fade 1"])
+        assertEquals(House.STUDIO, houses["Vivid"])
+    }
+
+    @Test
+    fun housesAreNamedByTheirLookNotByAMakersTrademark() {
+        val shown = House.entries.joinToString(" ") { it.title + " " + it.tagline }.lowercase()
+        for (mark in listOf("fuji", "kodak", "agfa", "ilford", "polaroid", "portra", "provia", "velvia"))
+            assertEquals(false, mark in shown, mark)
+        assertEquals(listOf("Goldbox", "Greenleaf", "Argentum", "Snapshot", "Old Europe", "Studio", "Recipes"), House.entries.map { it.title })
     }
 
     @Test
@@ -54,10 +62,10 @@ class FilmCatalogTest {
     }
 
     @Test
-    fun filmsAreOrderedByKindThenName() {
+    fun filmsAreOrderedByHouseThenName() {
         val films = FilmCatalog.build(looks)
-        assertEquals(films.sortedWith(compareBy({ it.kind.ordinal }, { it.name.lowercase() })), films)
-        assertEquals(listOf("Analog 1", "Neg Standard Holiday", "Portrait 400"), films.filter { it.kind == FilmKind.NEGATIVE }.map { it.name })
+        assertEquals(films.sortedWith(compareBy({ it.house.ordinal }, { it.name.lowercase() })), films)
+        assertEquals(listOf("Chrome 64", "Cine 500T", "Infrared 16", "Portrait 400"), films.filter { it.house == House.GOLDBOX }.map { it.name })
     }
 
     @Test
