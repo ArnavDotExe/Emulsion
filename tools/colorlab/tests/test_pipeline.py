@@ -996,3 +996,12 @@ def test_render_white_balance_and_exposure_match_lightroom_on_saturated_colors(s
 def test_per_channel_curves_still_act_per_channel():
     out = apply_curves(SATURATED, red=((0, 0), (128, 180), (255, 255)))
     np.testing.assert_allclose(out[:, 1:], SATURATED[:, 1:])
+
+
+def test_render_of_a_look_profile_itself_uses_its_table_amount():
+    from colorlab.adobe_table import encode_rgb_table
+    table = RGBTable(Lut3D(1.0 - Lut3D.identity(5).table), Primaries.SRGB, Gamma.SRGB, Gamut.CLIP, 0.0, 2.0)
+    profile = parse_preset(make_xmp({"PresetType": "Look", "RGBTable": "T", "Table_T": encode_rgb_table(table),
+                                     "RGBTableAmount": "0.5"}))
+    x = grid(5)
+    np.testing.assert_allclose(render(profile, x), np.full_like(x, 0.5), atol=1e-4)

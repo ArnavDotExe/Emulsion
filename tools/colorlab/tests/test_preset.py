@@ -316,3 +316,9 @@ def test_inline_look_hue_sat_map_is_decoded():
 def test_bad_hue_sat_map_payload_raises():
     with pytest.raises(PresetFormatError, match="Table_M"):
         parse_preset(make_xmp({"PresetType": "Look", "LookTable": "M", "Table_M": "0000"}))
+
+
+def test_unreadable_look_table_amount_counts_as_one():
+    look = """<crs:Look><rdf:Description crs:Name="B" crs:Amount="1" crs:UUID="B1">
+       <crs:Parameters crs:RGBTableAmount="lots"/></rdf:Description></crs:Look>"""
+    assert parse_preset(make_xmp(children=look)).look.table_amount == 1.0

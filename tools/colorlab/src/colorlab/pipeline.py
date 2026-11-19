@@ -23,7 +23,7 @@ import numpy as np
 
 from . import colorspace as cs
 from . import response
-from .adobe_table import apply_rgb_table
+from .adobe_table import apply_hue_sat_map, apply_rgb_table
 from .errors import ParameterError
 from .lut import Lut3D
 from .preset import IDENTITY_CURVE, Preset
@@ -913,17 +913,21 @@ def _sliders(preset: Preset) -> _Sliders:
 
 
 def _look_table(s: _Sliders, enc: np.ndarray) -> np.ndarray:
-    look = s.preset.look
-    table = look.table if look is not None else None
-    if table is None and s.preset.rgb_table is not None:
-        table, amount = s.preset.rgb_table, 1.0
-    elif table is not None:
-        amount = look.amount
+    """The look's RGB table at the look amount x its ``RGBTableAmount``, then its hue/sat map
+    at the look amount (a look profile's own tables at amount 1 when there is no look)."""
+    look, preset = s.preset.look, s.preset
+    if look is not None and (look.table is not None or look.hue_sat_map is not None):
+        table, hue_sat_map, amount, table_amount = look.table, look.hue_sat_map, look.amount, look.table_amount
+    elif preset.rgb_table is not None or preset.look_table is not None:
+        table, hue_sat_map, amount, table_amount = preset.rgb_table, preset.look_table, 1.0, preset.table_amount
     else:
         return enc
     lin = cs.decode(enc, WORKING_TRANSFER)
-    out = apply_rgb_table(table, lin, WORKING, amount=amount).astype(np.float64)
-    return cs.encode(out, WORKING_TRANSFER)
+    if table is not None:
+        lin = apply_rgb_table(table, lin, WORKING, amount=amount * table_amount).astype(np.float64)
+    if hue_sat_map is not None:
+        lin = apply_hue_sat_map(hue_sat_map, lin, WORKING, amount=amount)
+    return cs.encode(lin, WORKING_TRANSFER)
 
 
 def _stage_whites_blacks(s: _Sliders, enc: np.ndarray) -> np.ndarray:

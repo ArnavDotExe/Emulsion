@@ -16,7 +16,7 @@ from xml.etree.ElementTree import Element, ParseError
 from defusedxml import DefusedXmlException
 from defusedxml import ElementTree as SafeET
 
-from .adobe_table import RGBTable, decode_rgb_table
+from .adobe_table import HueSatMap, RGBTable, decode_hue_sat_map, decode_rgb_table
 from .errors import PresetFormatError, TableDecodeError
 
 CRS = "{http://ns.adobe.com/camera-raw-settings/1.0/}"
@@ -40,11 +40,22 @@ class LookRef:
     table: RGBTable | None = None
     source: Preset | None = None
     parameters: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    hue_sat_map: HueSatMap | None = None
 
     @property
     def resolved(self) -> bool:
         """True when the look's color data is actually available to us."""
-        return self.source is not None or self.table is not None or (not self.stubbed and self.table_ref is None)
+        return (self.source is not None or self.table is not None or self.hue_sat_map is not None
+                or (not self.stubbed and self.table_ref is None))
+
+    @property
+    def table_amount(self) -> float:
+        """The RGB table's own strength, multiplied with the look amount (``RGBTableAmount``):
+        the look's parameter, else its profile's, else 1."""
+        raw = self.parameters.get("RGBTableAmount")
+        if raw is not None:
+            return _float(raw, 1.0)
+        return self.source.table_amount if self.source is not None else 1.0
 
 
 @dataclass(frozen=True, eq=False)
@@ -58,7 +69,13 @@ class Preset:
     curves: Mapping[str, tuple[tuple[int, int], ...]]
     look: LookRef | None = None
     rgb_table: RGBTable | None = None
+    look_table: HueSatMap | None = None
     source: Path | None = field(default=None)
+
+    @property
+    def table_amount(self) -> float:
+        """A look profile's ``RGBTableAmount`` (1 when absent)."""
+        return self.number("RGBTableAmount", 1.0)
 
     def has(self, key: str) -> bool:
         return key in self.settings
@@ -136,6 +153,10 @@ def parse_preset(text: str, source: Path | None = None) -> Preset:
         if ref not in payloads:
             raise PresetFormatError(f"{where}RGBTable references missing Table_{ref}")
         rgb_table = _decode(payloads[ref], where, f"Table_{ref}")
+    look_table = None
+    ref = settings.get("LookTable")
+    if ref and ref in payloads:
+        look_table = _decode_map(payloads[ref], where, f"Table_{ref}")
 
     return Preset(
         name=alts.get("Name") or (source.stem if source else ""),
@@ -147,6 +168,7 @@ def parse_preset(text: str, source: Path | None = None) -> Preset:
         curves=MappingProxyType(curves),
         look=look,
         rgb_table=rgb_table,
+        look_table=look_table,
         source=source,
     )
 
@@ -187,6 +209,10 @@ def _parse_look(el: Element, where: str) -> LookRef:
     table = None
     if rgb_ref and f"Table_{rgb_ref}" in merged:
         table = _decode(merged[f"Table_{rgb_ref}"], where, f"Look Table_{rgb_ref}")
+    map_ref = merged.get("LookTable")
+    hue_sat_map = None
+    if map_ref and f"Table_{map_ref}" in merged:
+        hue_sat_map = _decode_map(merged[f"Table_{map_ref}"], where, f"Look Table_{map_ref}")
     try:
         amount = float(attrs.get("Amount", "1"))
     except ValueError:
@@ -200,7 +226,22 @@ def _parse_look(el: Element, where: str) -> LookRef:
         table_ref=ref,
         table=table,
         parameters=MappingProxyType({k: v for k, v in parameters.items() if not k.startswith("Table_")}),
+        hue_sat_map=hue_sat_map,
     )
+
+
+def _decode_map(payload: str, where: str, label: str) -> HueSatMap:
+    try:
+        return decode_hue_sat_map(payload)
+    except TableDecodeError as exc:
+        raise PresetFormatError(f"{where}{label}: {exc}") from exc
+
+
+def _float(raw: str, default: float) -> float:
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 def _decode(payload: str, where: str, label: str) -> RGBTable:
@@ -224,7 +265,8 @@ def resolve_looks(presets: Iterable[Preset], profiles: Iterable[Preset] = ()) ->
         look = p.look
         if look is not None and look.source is None and look.uuid in by_uuid and by_uuid[look.uuid] is not p:
             src = by_uuid[look.uuid]
-            p = replace(p, look=replace(look, source=src, table=look.table or src.rgb_table))
+            p = replace(p, look=replace(look, source=src, table=look.table or src.rgb_table,
+                                        hue_sat_map=look.hue_sat_map or src.look_table))
         out.append(p)
     return out
 
