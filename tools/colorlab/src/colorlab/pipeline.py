@@ -809,6 +809,11 @@ def _opponent(luminance: Sequence[float]) -> np.ndarray:
     return np.array([w, [0.5, -0.5, 0.0], [-w[0] / 4, -w[1] / 4, 0.25 - w[2] / 4]])
 
 
+#: how strongly negative vibrance darkens a colour's max, fitted on the PV 11 and PV 15.4
+#: Vibrance -50/-100 bakes (sRGB and ProPhoto; 0.86-0.94 tried)
+NEGATIVE_VIBRANCE_DARKEN = 0.88
+
+
 def _vibrance(lo: np.ndarray, hi: np.ndarray, h: np.ndarray, amount: float) -> tuple[np.ndarray, np.ndarray]:
     """Vibrance ``amount`` (-1..1) on a color's scene min, max and hexcone hue: the new min and max.
 
@@ -834,7 +839,7 @@ def _vibrance(lo: np.ndarray, hi: np.ndarray, h: np.ndarray, amount: float) -> t
         spread = (1.0 - s) * shadow * (1.0 - lo) * (0.8333333 - 0.4047619 * muted_skin) * push
         new_lo = new_hi * (1.0 - s / (1.0 - spread))
     else:
-        new_hi = hi * (headroom * shadow * amount * mid_sat * (2.0 - mid_sat) + 1.0)
+        new_hi = hi * (NEGATIVE_VIBRANCE_DARKEN * headroom * shadow * amount * mid_sat * (2.0 - mid_sat) + 1.0)
         kept = s * (amount + 1.0 - shadow * s * amount * (s * 0.5 + 0.5))
         new_lo = new_hi * (1.0 - (amount * 0.25 + 1.0) * kept)
     return np.where(colored, new_lo, lo), np.where(colored, new_hi, hi)
