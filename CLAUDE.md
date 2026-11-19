@@ -233,6 +233,12 @@ Lightroom quirks:
   - `finish.apply_settings` runs every spatial pass in a preset in Lightroom's order (NR,
     Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, vignette, grain) on the encoded
     image (`finish.render_preset` orders them around the look as above).
+- Task 7 is done: the 15 mobile DNG presets against their embedded Lightroom previews (SubIFD 0 is
+  the photo, already sRGB-encoded; SubIFD 1 Lightroom's render) score median 2.60 / mean 2.64
+  (unedited 9.53 / 11.34; `tests/private/test_dng_previews.py`). What's left is Highlights − on
+  real photos: removing it helps 5 of 12, bright photos want 0–50% of it and dark ones all of it,
+  so Lightroom's Highlights is likely image-adaptive. Not the process version or the slider
+  order. Needs bakes of Highlights/Shadows on several photos at PV 15.4.
 - Task 8 is done: `colorlab.fsim` (ee95db8). All 59 private presets round-trip and render like
   `render_preset` (mean ΔE median 0.035, worst 0.097); a 33-point look file is about 280 KiB.
 - Biggest single-slider gaps:
@@ -254,7 +260,6 @@ Lightroom quirks:
 - Then:
   - 6b's gaps: Dehaze +100 (1.60: lightness inside flat areas, needs an edge-aware large-scale haze
     map), Saturation − with Vibrance − (needs a bake), and the whole-preset gaps above.
-  - 7: check against the Fuji DNG presets' embedded Lightroom previews.
   - 9: the CLI.
   - After that, the Android app.
   - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own

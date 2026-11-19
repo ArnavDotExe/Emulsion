@@ -2,8 +2,8 @@
 
 **Source plan:** the Phase 1 "Python color lab" plan agreed in the planning session.
 This report covers tasks 1–5 (repo setup, color spaces, LUTs, the RGBTable decoder and
-the preset reader) and task 6a (global color pipeline). Still open: checks against Lightroom renders (7) and the command-line tool (9); the `.fsim.json`
-look format (8) is done.
+the preset reader) and task 6a (global color pipeline). Still open: the command-line tool (9); the checks against Lightroom's DNG previews (7) and the
+`.fsim.json` look format (8) are done.
 
 ## User journeys
 
@@ -1788,6 +1788,53 @@ exports best (`finish.render_preset`). `fsim.apply` is the reference renderer, a
 
 - RED `e3b76b5` (23 fail: cannot import `colorlab.fsim` or `FsimFormatError`), GREEN `ee95db8`
   (567 pass, 98%; `fsim.py` 100%).
+
+## Mobile DNG presets against their embedded Lightroom previews (task 7)
+
+Journey: as a photographer, I want my mobile (`.dng`) presets to look in Emulsion the way
+Lightroom showed them, on real photos and not only on our charts.
+
+A mobile preset DNG carries the photo it was made on and Lightroom's render of it:
+- IFD 0 is a 256 px thumbnail;
+- SubIFD 0 is the photo as an 8-bit linear-raw proxy (`UniqueCameraModel` "JPEG", profile
+  "Embedded", sRGB primaries, baseline exposure 0), whose values are **already sRGB-encoded**:
+  read as linear and encoded, the presets score about 16 ΔE; used directly, 2.6;
+- SubIFD 1 is Lightroom's render with the preset, a JPEG preview of about 1024 px in sRGB;
+- SubIFDs 2 and 3 are 16-bit JPEG XL proxies at 512 and 256 px.
+
+All 15 are PV 15.4. Scores are mean ΔE2000 after a σ 2 px blur, with our render
+(`finish.render_preset`) resized to the preview:
+
+| | Median | Mean | Worst |
+|---|---|---|---|
+| The unedited photo | 9.53 | 11.34 | 22.9 |
+| Our global colour only | 2.46 | 3.29 | 5.61 |
+| The whole preset | **2.60** | **2.64** | 4.19 |
+
+Every preset comes out at least 3.9 ΔE closer to Lightroom than the unedited photo.
+
+- **What's left is Highlights −.** Removing one spatial pass at a time:
+  - without Highlights/Shadows, 5 of the 12 presets that use them get better, by up to 1.9;
+  - all five pair Highlights −20 to −35 with Shadows + (one preset with Highlights −35 and
+    Shadows +30 goes from 4.13 to 1.86 with Highlights alone set to 0);
+  - our render is 4–8 L* too dark in the midtones and highlights of those photos.
+  - The vignette is right: removing it costs up to 4.1.
+- **Not the process version.** The spatial charts were measured at PV 11, but on the preset
+  kit's scene chart, PV 15.4 presets with Highlights − alone fit best at full strength
+  (−49: 0.54, −39: 0.37).
+- **Not the order of the two sliders.** Highlights then Shadows, or the reverse, instead of
+  adding both changes, moves the DNGs' median by 0.02.
+- **Likely image-adaptive.** The bright photos want much less Highlights − than the chart
+  (best at 0–50%). The darkest photo (69% of pixels below L* 40) needs all of it. Lightroom's
+  PV 2012+ tone sliders adapt to the image, and one chart can't measure that. Fitting the 15
+  previews would fit the validation set, so it needs bakes: Highlights and Shadows at
+  ±25/50/100 on several real photos (bright, dark, low contrast) at PV 15.4.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | All 15 DNG presets match their previews at median < 2.7, mean < 2.75, worst < 4.3, each at least 3.5 closer than the unedited photo (private) | `tests/private/test_dng_previews.py` | PASS |
+
+No code changed: the check found no fix that holds without new bakes.
 
 ## Coverage and known gaps
 
