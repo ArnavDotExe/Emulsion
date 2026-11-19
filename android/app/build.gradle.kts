@@ -59,4 +59,6 @@ dependencies {
     implementation(libs.camera.camera2)
     implementation(libs.camera.lifecycle)
     implementation(libs.camera.view)
+    testImplementation(libs.kotlin.test.junit)
+    testImplementation(libs.junit)
 }
