@@ -117,3 +117,26 @@ def test_compare_saves_each_row_as_it_goes_and_resumes_from_the_json(tmp_path, c
     assert main(["compare", str(exports), str(kit), str(presets), "--json", str(out), "--fresh"]) == 0
     rows = {r["name"]: r for r in json.loads(out.read_text(encoding="utf-8"))["rows"]}
     assert rows["Plain"]["after"] < 0.02
+
+
+def test_compare_resolves_builtin_looks_from_profile_folders(tmp_path):
+    from colorlab.adobe_table import Gamma, Gamut, Primaries, RGBTable, encode_rgb_table
+
+    presets, kit, exports, profiles = (tmp_path / "presets", tmp_path / "kit", tmp_path / "exports",
+                                       tmp_path / "profiles")
+    presets.mkdir(); profiles.mkdir()
+    look = """<crs:Look><rdf:Description crs:Name="Builtin" crs:Amount="1.0" crs:UUID="B1">
+       <crs:Parameters crs:RGBTable="T"/></rdf:Description></crs:Look>"""
+    (presets / "Built.xmp").write_text(make_xmp(children=look).replace("Test Preset", "Built"), encoding="utf-8")
+    table = encode_rgb_table(RGBTable(Lut3D(np.full((2, 2, 2, 3), 0.3)), Primaries.SRGB, Gamma.SRGB, Gamut.CLIP, 0.0, 2.0))
+    (profiles / "Builtin.xmp").write_text(make_xmp({"PresetType": "Look", "UUID": "B1", "RGBTable": "T", "Table_T": table}),
+                                          encoding="utf-8")
+    write_preset_kit(presets, kit, size=SIZE)
+    [preset] = load_preset_dir(presets, profile_dirs=[profiles])
+    chart = read_rgb_tiff(kit / "images" / f"{FULL_PREFIX}Built.tif")
+    _export(kit, exports, f"{FULL_PREFIX}Built", render_preset(preset, chart))
+    assert compare_exports(exports, kit, presets).rows[0]["before"] > 1.0  # the look is missing
+    assert compare_exports(exports, kit, presets, profile_dirs=[profiles]).rows[0]["before"] < 0.02
+    out = tmp_path / "r.json"
+    assert main(["compare", str(exports), str(kit), str(presets), "--profiles", str(profiles), "--json", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["rows"][0]["before"] < 0.02
