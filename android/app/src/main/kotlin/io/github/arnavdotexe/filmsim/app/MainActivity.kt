@@ -15,6 +15,13 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.ViewPort
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import android.util.Rational
+import android.view.Surface
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
@@ -119,7 +126,10 @@ private fun CameraScreen() {
     var busy by remember { mutableStateOf(false) }
     val processor = remember { FilmProcessor() }
     val capture = remember {
-        ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build()
+        ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .setResolutionSelector(FOUR_THREE)
+            .build()
     }
     val previewView = remember {
         PreviewView(context).apply {
@@ -141,8 +151,12 @@ private fun CameraScreen() {
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
             val provider = future.get()
-            val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+            val preview = Preview.Builder().setResolutionSelector(FOUR_THREE).build()
+                .also { it.surfaceProvider = previewView.surfaceProvider }
+            // One 3:4 frame for preview and capture: the photo is exactly what the preview shows.
+            val rotation = previewView.display?.rotation ?: Surface.ROTATION_0
             val group = UseCaseGroup.Builder()
+                .setViewPort(ViewPort.Builder(Rational(3, 4), rotation).setScaleType(ViewPort.FILL_CENTER).build())
                 .addUseCase(preview)
                 .addUseCase(capture)
                 .addEffect(FilmEffect(processor))
@@ -156,10 +170,12 @@ private fun CameraScreen() {
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
-        AndroidView({ previewView }, Modifier.fillMaxSize())
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        // The frame: 3:4, the same crop as the photo.
+        AndroidView({ previewView }, Modifier.fillMaxWidth().aspectRatio(3f / 4f))
         Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0xAA000000)).navigationBarsPadding().padding(bottom = 16.dp),
+            Modifier.fillMaxWidth().weight(1f).navigationBarsPadding().padding(bottom = 16.dp),
+            verticalArrangement = Arrangement.SpaceEvenly,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
@@ -226,6 +242,11 @@ private fun Shutter(enabled: Boolean, onClick: () -> Unit) {
             .semantics { contentDescription = "Take photo" },
     )
 }
+
+/** 4:3 sensor output (3:4 upright), the shape of the frame. */
+private val FOUR_THREE = ResolutionSelector.Builder()
+    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+    .build()
 
 private suspend fun ImageCapture.takePicture(context: Context): ImageProxy = suspendCancellableCoroutine { cont ->
     takePicture(ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageCapturedCallback() {
