@@ -23,6 +23,15 @@ android {
         release {
             isMinifyEnabled = false
         }
+        // A shrunk build for testers, signed with the local debug key so it installs directly.
+        create("preview") {
+            initWith(getByName("release"))
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+        }
     }
 
     compileOptions {
