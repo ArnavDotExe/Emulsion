@@ -401,3 +401,24 @@ def test_cli_response_prints_warnings(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(response, "load", _unreadable)
     assert main(["response", str(luts), "--out", str(tmp_path / "r.json")]) == 0
     assert "warning: " in capsys.readouterr().out
+
+
+def test_process_version_15_4_color_variants_check_saturation_vibrance_and_hsl_alone_and_combined():
+    # Bright saturated colours under strong looks showed our PV 15.4 colour sliders were never baked;
+    # these check them alone and in the combinations a preset uses, without feeding the PV 11 fit.
+    color = [v for v in VARIANTS if v.name.startswith("Cal PV15 Color ")]
+    names = {v.name for v in color}
+    for name in ("Cal PV15 Color Saturation +50", "Cal PV15 Color Saturation -100", "Cal PV15 Color Vibrance +100",
+                 "Cal PV15 Color Vibrance -50", "Cal PV15 Color Saturation +50 Vibrance +50"):
+        assert name in names, name
+    for band in BANDS:
+        b = band.capitalize()
+        for kind, key in (("Hue", "HueAdjustment"), ("Sat", "SaturationAdjustment"), ("Lum", "LuminanceAdjustment")):
+            for value in ("+100", "-100"):
+                assert BY_NAME[f"Cal PV15 Color HSL {kind} {b} {value}"].settings[f"{key}{b}"] == value
+    combos = [v for v in color if "Saturation" in v.settings and any(k.endswith("AdjustmentYellow") for k in v.settings)]
+    assert len(combos) >= 3 and any("Vibrance" in v.settings for v in color if len(v.settings) > 2)
+    for v in color:
+        assert v.settings["ProcessVersion"] == "15.4" and v.fits == ()
+        assert parse_preset(variant_xmp(v)).process_version == "15.4"
+    assert len(names) == len(color) >= 60
