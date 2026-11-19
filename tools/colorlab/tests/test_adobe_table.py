@@ -293,3 +293,9 @@ def test_hue_sat_map_amount_blends_linear_output_and_works_in_prophoto():
                                           cs.PROPHOTO_RGB, cs.SRGB), atol=1e-6)
     with pytest.raises(ParameterError):
         apply_hue_sat_map(m, red, cs.PROPHOTO_RGB, amount=1.5)
+
+
+@pytest.mark.parametrize("blob", [b"\x01", struct.pack("<I", 9) + b"not zlib", struct.pack("<I", 8) + zlib.compress(b"12345678")])
+def test_hue_sat_map_rejects_broken_blobs(blob):
+    with pytest.raises(TableDecodeError):
+        decode_hue_sat_map(encode_base85(blob))

@@ -219,3 +219,128 @@ def apply_rgb_table(
     mixed = enc + amount * (looked - enc)
     out = cs.decode(mixed, table.transfer) + residual
     return cs.convert(out, table.space, space).astype(np.float32)
+
+
+# --- hue/saturation/value maps (crs:LookTable) -----------------------------------------------
+#
+# A look profile's ``crs:LookTable`` uses the same text and blob wrapping as an RGB table. Its
+# payload (little-endian) is ``uint32`` type 0, version (1 or 2), hue, saturation and value
+# divisions, then ``hue x sat x value`` float32 triples (hue shift in degrees, saturation scale,
+# value scale), value outermost and saturation innermost, then a ``uint32`` value encoding
+# (0 linear, 1 sRGB); version 2 adds a ``float64`` min/max amount. It acts like the DNG
+# specification's HueSatMap: on linear ProPhoto RGB, through a hexcone hue/saturation/value model,
+# interpolated over the cells, with hue wrapping around.
+
+TABLE_TYPE_HUE_SAT = 0
+HUE_SAT_VERSIONS = (1, 2)
+MAX_HUE_SAT_DIVISIONS = 360
+HUE_SAT_SPACE = cs.PROPHOTO_RGB
+
+
+@dataclass(frozen=True, eq=False)
+class HueSatMap:
+    """``cells[value, hue, sat] = (hue shift in degrees, saturation scale, value scale)``."""
+
+    cells: np.ndarray
+    srgb_values: bool = False
+    min_amount: float = 0.0
+    max_amount: float = 1.0
+
+
+def decode_hue_sat_map(text: str) -> HueSatMap:
+    blob = decode_base85(text)
+    if len(blob) < 4:
+        raise TableDecodeError("LookTable blob is too short")
+    declared = int.from_bytes(blob[:4], "little")
+    try:
+        data = zlib.decompress(blob[4:])
+    except zlib.error as exc:
+        raise TableDecodeError(f"LookTable zlib stream is corrupt: {exc}") from exc
+    if len(data) != declared:
+        raise TableDecodeError(f"LookTable size mismatch: declared {declared}, got {len(data)}")
+    if len(data) < 20:
+        raise TableDecodeError("LookTable header is truncated")
+    kind, version, hues, sats, values = struct.unpack_from("<5I", data)
+    if kind != TABLE_TYPE_HUE_SAT:
+        raise TableDecodeError(f"not a hue/saturation map (type {kind})")
+    if version not in HUE_SAT_VERSIONS:
+        raise TableDecodeError(f"unsupported LookTable version {version}")
+    if not (1 <= hues <= MAX_HUE_SAT_DIVISIONS and 2 <= sats <= MAX_HUE_SAT_DIVISIONS
+            and 1 <= values <= MAX_HUE_SAT_DIVISIONS):
+        raise TableDecodeError(f"LookTable divisions {hues} x {sats} x {values} out of range")
+    end = 20 + 12 * hues * sats * values
+    tail = 4 + (16 if version == 2 else 0)
+    if len(data) < end + tail:
+        raise TableDecodeError(f"LookTable cells truncated: need {end + tail} bytes, have {len(data)}")
+    cells = np.frombuffer(data, dtype="<f4", count=3 * hues * sats * values, offset=20)
+    (encoding,) = struct.unpack_from("<I", data, end)
+    if encoding not in (0, 1):
+        raise TableDecodeError(f"unknown LookTable value encoding {encoding}")
+    lo, hi = struct.unpack_from("<2d", data, end + 4) if version == 2 else (0.0, 1.0)
+    return HueSatMap(cells.reshape(values, hues, sats, 3).astype(np.float64), bool(encoding), float(lo), float(hi))
+
+
+def encode_hue_sat_map(m: HueSatMap) -> str:
+    values, hues, sats, _ = m.cells.shape
+    body = (
+        struct.pack("<5I", TABLE_TYPE_HUE_SAT, 2, hues, sats, values)
+        + np.asarray(m.cells, dtype="<f4").tobytes()
+        + struct.pack("<I2d", int(m.srgb_values), m.min_amount, m.max_amount)
+    )
+    return encode_base85(struct.pack("<I", len(body)) + zlib.compress(body, 9))
+
+
+def _hexcone(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Hue in [0, 6), saturation and value of linear RGB (hexcone model)."""
+    hi, lo = rgb.max(-1), rgb.min(-1)
+    span = hi - lo
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    safe = np.where(span > 0, span, 1.0)
+    hue = np.where(hi == r, ((g - b) / safe) % 6.0, np.where(hi == g, (b - r) / safe + 2.0, (r - g) / safe + 4.0))
+    hue = np.where(span > 0, hue, 0.0)
+    sat = np.where(hi > 0, span / np.where(hi > 0, hi, 1.0), 0.0)
+    return hue, sat, hi
+
+
+def _from_hexcone(hue: np.ndarray, sat: np.ndarray, value: np.ndarray) -> np.ndarray:
+    sector = hue % 6.0
+    # each channel rises and falls over the hexcone's six sectors (red at 0, green 2, blue 4)
+    def channel(center: float) -> np.ndarray:
+        d = np.abs((sector - center + 3.0) % 6.0 - 3.0)
+        return value * (1.0 - sat * np.clip(d - 1.0, 0.0, 1.0))
+    return np.stack([channel(0.0), channel(2.0), channel(4.0)], axis=-1)
+
+
+def _cell_weights(position: np.ndarray, divisions: int, wrap: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if divisions == 1:
+        zero = np.zeros(position.shape, dtype=np.int64)
+        return zero, zero, np.zeros(position.shape)
+    low = np.floor(position).astype(np.int64)
+    if not wrap:
+        low = np.clip(low, 0, divisions - 2)
+    frac = position - low
+    return low % divisions, (low + 1) % divisions, frac
+
+
+def apply_hue_sat_map(m: HueSatMap, rgb: np.ndarray, space: cs.RGBSpace, amount: float = 1.0) -> np.ndarray:
+    """Apply ``m`` to *linear* ``rgb`` in ``space`` (the map acts on linear ProPhoto RGB);
+    ``amount`` blends between the input and the mapped color on linear values."""
+    if not m.min_amount <= amount <= m.max_amount:
+        raise ParameterError(f"amount {amount} outside map range [{m.min_amount}, {m.max_amount}]")
+    lin = cs.convert(np.asarray(rgb, dtype=np.float64), space, HUE_SAT_SPACE)
+    hue, sat, value = _hexcone(lin)
+    values, hues, sats, _ = m.cells.shape
+    key = np.clip(value, 0.0, 1.0)
+    if m.srgb_values:
+        key = cs.encode(key, cs.Transfer.SRGB)
+    v0, v1, tv = _cell_weights(key * (values - 1), values, wrap=False)
+    h0, h1, th = _cell_weights(hue * hues / 6.0, hues, wrap=True)
+    s0, s1, ts = _cell_weights(np.clip(sat, 0.0, 1.0) * (sats - 1), sats, wrap=False)
+    cell = 0.0
+    for vi, wv in ((v0, 1 - tv), (v1, tv)):
+        for hi, wh in ((h0, 1 - th), (h1, th)):
+            for si, ws in ((s0, 1 - ts), (s1, ts)):
+                cell = cell + (wv * wh * ws)[..., None] * m.cells[vi, hi, si]
+    mapped = _from_hexcone(hue + cell[..., 0] / 60.0, np.clip(sat * cell[..., 1], 0.0, 1.0), value * cell[..., 2])
+    out = lin + amount * (mapped - lin)
+    return cs.convert(out, HUE_SAT_SPACE, space)
