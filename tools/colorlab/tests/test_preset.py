@@ -274,6 +274,8 @@ def test_load_preset_dir_resolves_builtin_looks_from_installed_profile_folders(t
     (presets / "User.xmp").write_text(make_xmp({"UUID": "USER"}, children=look), encoding="utf-8")
     (profiles / "Vintage 05.xmp").write_text(
         make_xmp({"PresetType": "Look", "UUID": "981D", "RGBTable": "T", "Table_T": table_text(0.75)}), encoding="utf-8")
+    (profiles / "Broken.xmp").write_text("<not xmp", encoding="utf-8")  # skipped, like non-Look presets
+    (profiles / "Style.xmp").write_text(make_xmp({"UUID": "981D"}), encoding="utf-8")
     assert not load_preset_dir(presets)[0].look.resolved
     [user] = load_preset_dir(presets, profile_dirs=[tmp_path / "profiles", tmp_path / "missing"])
     assert user.look.resolved and user.look.source.uuid == "981D"

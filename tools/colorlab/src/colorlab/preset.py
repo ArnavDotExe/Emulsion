@@ -210,10 +210,15 @@ def _decode(payload: str, where: str, label: str) -> RGBTable:
         raise PresetFormatError(f"{where}{label}: {exc}") from exc
 
 
-def resolve_looks(presets: Iterable[Preset]) -> list[Preset]:
-    """Link stubbed looks to the Look-type preset (same UUID) that defines them."""
+def resolve_looks(presets: Iterable[Preset], profiles: Iterable[Preset] = ()) -> list[Preset]:
+    """Link each look without data to the Look-type preset (same UUID) that defines it.
+
+    ``profiles`` are extra Look presets used only for resolving, for example the profiles
+    Lightroom installs for its built-in looks; a Look among ``presets`` takes precedence.
+    """
     presets = list(presets)
-    by_uuid = {p.uuid: p for p in presets if p.preset_type == "Look" and p.uuid}
+    by_uuid = {p.uuid: p for p in profiles if p.preset_type == "Look" and p.uuid}
+    by_uuid.update({p.uuid: p for p in presets if p.preset_type == "Look" and p.uuid})
     out = []
     for p in presets:
         look = p.look
@@ -266,10 +271,29 @@ def load_preset(path: str | Path) -> Preset:
     return parse_preset(text, source=path)
 
 
-def load_preset_dir(root: str | Path) -> list[Preset]:
-    """Load every ``.xmp`` / ``.dng`` preset under ``root`` (sorted) and resolve looks."""
-    files = sorted(
-        (p for p in Path(root).rglob("*") if p.is_file() and p.suffix.lower() in PRESET_SUFFIXES),
-        key=lambda p: str(p).lower(),
-    )
-    return resolve_looks(load_preset(p) for p in files)
+def _preset_files(root: Path) -> list[Path]:
+    return sorted((p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in PRESET_SUFFIXES),
+                  key=lambda p: str(p).lower())
+
+
+def load_profiles(dirs: Iterable[str | Path]) -> list[Preset]:
+    """The Look profiles under ``dirs`` (missing folders and unreadable files are skipped)."""
+    out = []
+    for root in map(Path, dirs):
+        if not root.is_dir():
+            continue
+        for path in _preset_files(root):
+            try:
+                preset = load_preset(path)
+            except (PresetFormatError, OSError, UnicodeDecodeError):
+                continue
+            if preset.preset_type == "Look":
+                out.append(preset)
+    return out
+
+
+def load_preset_dir(root: str | Path, profile_dirs: Iterable[str | Path] = ()) -> list[Preset]:
+    """Load every ``.xmp`` / ``.dng`` preset under ``root`` (sorted) and resolve looks, also from
+    the Look profiles under ``profile_dirs`` (for Lightroom's built-in looks, the folders where
+    Camera Raw installs its profiles)."""
+    return resolve_looks((load_preset(p) for p in _preset_files(Path(root))), load_profiles(profile_dirs))
