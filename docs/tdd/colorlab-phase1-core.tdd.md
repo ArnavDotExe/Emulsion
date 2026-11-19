@@ -1528,6 +1528,95 @@ removed. Scores are mean ΔE2000 on a 17³ grid against each LUT.
   `f3f155c` (530 pass, 98%). All 34 private tests pass, so no other preset changed: none of
   the packs' profiles carry a map or a table amount.
 
+## PV 15.4 colour sliders and a finite top for their scene scale (`COLOR_KNEE`, `_to_color_scene`)
+
+Journey: as a photographer whose preset pushes saturation and HSL, I want bright saturated colours
+(and near-white tints) to come out the way Lightroom renders them, also under a strong look.
+
+The worst preset still turned bright saturated yellows nearly white under its look. Every PV 11
+single-slider bake scored under 1.5 ΔE on bright saturated colours (value ≥ 0.85, saturation
+≥ 0.6), but that preset is PV 15.4, whose colour sliders had never been baked. The kit
+`out/brightsat-kit` holds 75 bakes:
+- 69 `Cal PV15 Color …` calibration variants (`calibration._process_version_15_4_color`):
+  Saturation and Vibrance at several amounts, every HSL band's hue, saturation and luminance at
+  ±100, and Saturation or Vibrance +50 with five HSL moves;
+- 6 private variants of the worst preset: its colour sliders at PV 15.4 and PV 11, its HSL only,
+  its Saturation and Vibrance only, its colour sliders under its look, and its tone only.
+
+The user exported it twice, as sRGB and as ProPhoto. The ProPhoto exports (gamma 1.8) keep the
+colours that the sRGB export clips. Scores are mean ΔE2000 on a 17³ grid; for ProPhoto, both
+sides are clipped to [0, 1] in ProPhoto and compared in unclipped Lab.
+
+### What the bakes showed
+
+- **PV 15.4 HSL single sliders are fine.** All are at most 0.6 apart from Lum Green −100 (0.64)
+  and Lum Blue ±100 (0.36–0.45).
+- **Multi-band HSL keeps our semantics.**
+  - On the preset's HSL-only bake, looking bands up at the original hue is best (0.55).
+  - Luminance at the shifted hue scored 1.52; saturation at the shifted hue 4.47; both 4.91.
+  - A linear response to the slider amount beats powers from 0.85 to 1.5.
+  - Interpolating partial negative saturation in linear or encoded values instead of scene
+    values isn't better either.
+- **Positive Saturation was off beyond sRGB.**
+  - ProPhoto +15/+50/+100 scored 0.57/1.05/1.50, against 0.24/0.55/0.80 in sRGB.
+  - Its worst cells are near-white tints. The ProPhoto tint (0.981, 0.996, 0.882) at +50 came
+    out (0.862, 0.996, 0.000); Lightroom gives (0.969, 1.000, 0.772).
+  - The cause is the exposure shoulder's stretch, which runs off to infinity at white: linear
+    0.99 → 9.2, 0.999 → 16.8, 1.0 → 4153. A tiny linear difference near white becomes a huge
+    scene difference, and scaling chroma there wipes out the low channel.
+  - Saturation on linear values (+50: 1.95) or encoded values (3.87) is worse, and so is a
+    "lift the negative part" variant (1.53).
+  - The luminance weights it keeps are already the best fit.
+  - A brightness fade of the strength helped positives slightly (1.04 → 0.97) but hurt negatives.
+
+### The change
+
+`COLOR_KNEE = 0.94`. The colour stages (saturation, vibrance/HSL, B&W) work on
+`_to_color_scene`: the shoulder's stretch up to the knee (encoded), then a straight line with
+the slope there. White balance, exposure and Whites/Blacks keep the plain shoulder.
+
+Knee positions, mean over 12 ProPhoto checks (Saturation ±, Vibrance ±100, four HSL singles, the
+preset's HSL, colour part and Saturation + Vibrance):
+
+| Knee | 1.0 (none) | 0.97 | 0.96 | 0.95 | 0.94 | 0.93 | 0.92 | 0.90 |
+|---|---|---|---|---|---|---|---|---|
+| Mean ΔE | 0.731 | 0.712 | 0.700 | 0.689 | 0.681 | 0.681 | 0.688 | 0.712 |
+
+At 0.94 none of the 12 get worse:
+- Saturation +50/+100: 1.05/1.50 → 0.95/1.36;
+- the preset's HSL: 0.55 → 0.50;
+- the preset's colour part: 0.74 → 0.67.
+
+Applying the knee to every stage instead made Temperature −100 5.1 worse.
+
+| Set (sRGB) | Before median / mean | Knee median / mean | Better / worse |
+|---|---|---|---|
+| Earlier calibration bakes (134) | 0.035 / 0.193 | 0.034 / 0.187 | 26 / 6, at most +0.05 |
+| New colour bakes (75) | 0.164 / 0.304 | 0.146 / 0.281 | 46 / 5, at most +0.03 |
+| The 44 private presets | 0.750 / 0.984 | 0.705 / 0.946 | 29 / 1, +0.015 |
+
+- **The worst preset.**
+  - The bright yellow (1, 1, 0.25) through its HSL went from 4.3 to 1.0 ΔE, and to 5.7 under
+    its look (was 10.1).
+  - Its grid score is 2.92 (was 3.31).
+  - On the scene chart it is still 1.81 (1.62 on Lightroom's LUT).
+- **The tint** from the RED test now comes out with blue 0.82 (Lightroom 0.772, was 0.0).
+- **Gaps.**
+  - Positive Saturation beyond sRGB: ProPhoto +50 0.95, +100 1.36.
+  - Vibrance −100: 1.45.
+  - Bright yellows under the look.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | 69 PV 15.4 colour variants cover Saturation, Vibrance, every HSL band at ±100 and Saturation/Vibrance + HSL combinations, and fit nothing | `test_process_version_15_4_color_variants_check_saturation_vibrance_and_hsl_alone_and_combined` | PASS |
+| 2 | The colour scene scale equals the shoulder's below the knee, round-trips, rises monotonically and stays finite at white | `test_colour_scene_scale_has_a_finite_top_above_its_knee` | PASS |
+| 3 | Saturation +50 keeps a near-white tint's low channel, as Lightroom does | `test_saturation_keeps_a_near_white_tints_low_channel` | PASS |
+
+- Colour variants: RED (`Cal PV15 Color Saturation +50` missing), GREEN `4d455fc` (533 pass, 98%).
+- Colour scale: RED `9031c3d` (cannot import `COLOR_KNEE`; the tint's blue 0.0), GREEN `17abbe2`
+  (535 pass, 98%). The colour-stage tests' scene helper now models the knee independently
+  (`color_scene`, `color_unscene`).
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

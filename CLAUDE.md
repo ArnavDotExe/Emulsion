@@ -86,7 +86,9 @@ The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values,
 Whites/Blacks (with exposure), saturation, vibrance + HSL (or B&W), then contrast, parametric, point
 curves, profile table and color grading.
 Saturation, vibrance and HSL work on scene-linear values: the exposure shoulder's stretch, applied
-hue-preservingly (min and max mapped, middle kept in place; `pipeline._to_scene`). White
+hue-preservingly (min and max mapped, middle kept in place; `pipeline._to_scene`). The colour
+stages use `_to_color_scene`: the same stretch up to `COLOR_KNEE` (0.94 encoded), then straight
+on, because the shoulder runs off to infinity at white and wiped out near-white tints. White
 balance and exposure are gains on that same scene scale: per Bradford cone for white balance, so
 white stays white. Neutral grays pass through unchanged between sRGB and the working space, so a
 bake's neutral ramp *is* Lightroom's tone curve.
@@ -115,7 +117,8 @@ Lightroom quirks:
 
 - Phase 1 tasks 1–5 (colorspace, lut, adobe_table, preset, bake) are done. Task 6a (global-color
   pipeline) is done and calibrated against 143 single-slider bakes.
-- Accuracy against the user's 44 private presets: median ΔE2000 0.75, mean 1.12.
+- Accuracy against the user's 44 private presets: median ΔE2000 0.75, mean 1.12 (on a 17³ grid
+  against their baked LUTs the colour scale's knee took the median from 0.750 to 0.705).
 - Tone is split the way Lightroom splits it (`pipeline.whites_blacks`, `pipeline.curve_tone`):
   - Whites/Blacks run first, with exposure. Whites + uses linear min/max, Whites − and Blacks +
     one scene-scale gain at the (R + 2G + B)/4 key, and Blacks − each channel on the scene scale.
@@ -215,9 +218,10 @@ Lightroom quirks:
     resolves from Camera Raw's installed profiles (`load_preset_dir(profile_dirs=...)`,
     `compare --profiles`), with the table at look amount × `RGBTableAmount` and then the
     profile's `LookTable` hue/sat map (`adobe_table.HueSatMap`): 1.81. Measured from the
-    decomposition bake in `out/decomp-luts`. On the grid, bright saturated yellows and magentas
-    are still too light under that look (scene-scale Saturation and HSL at the top of the
-    range); strong Highlights +
+    decomposition bake in `out/decomp-luts`. The PV 15.4 colour bake (`out/brightsat-kit`, sRGB and
+    ProPhoto exports) showed PV 15.4 HSL is right and gave the colour scale its knee: grid 3.31 ->
+    2.92. Left: positive Saturation beyond sRGB (ProPhoto +50 0.95, +100 1.36), Vibrance -100
+    1.45, bright yellows under that look; strong Highlights +
     Clarity + Dehaze presets are 1.5–2.5. Looks whose profile carries Highlights/Shadows have
     baked LUTs that hold a Hald-specific version of that pass.
   - `finish.apply_settings` runs every spatial pass in a preset in Lightroom's order (NR,
