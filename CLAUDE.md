@@ -81,6 +81,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `finish` | Vignette (measured mask profile plus a value × weight table per amount; midpoint, feather, roundness, styles, highlights), sharpening (clamped unsharp mask on luma, fixed in pixels), noise reduction (guided filter on Y, Gaussian on CbCr), Lightroom-statistic grain (seeded `G_s − b G_2s` noise, frame-relative size), all in `data/finish.json`; `apply_settings` runs every spatial pass a preset names in Lightroom's order; `render_preset` runs local passes and vignette before the look, grain after, with the look profile's Highlights/Shadows folded in (`spatial_settings`); `apply` CLI |
 | `preset_check` | Whole-preset check: `kit` writes full preset copies (geometry neutralized) on the scene chart as embedded sidecars; `compare` scores Lightroom's exports against `finish.render_preset` (global, spatial passes after or before the look, blurred, and on Lightroom's baked LUTs), saving its JSON per preset and resuming from it |
 | `metrics` | sRGB → Lab, CIEDE2000 |
+| `fsim` | The `.fsim.json` look format (v1): a look's global colour as a base64 uint16 3D LUT (`.cube` order) plus its local, vignette and grain settings in Lightroom slider units; `from_preset`, strict `loads`/`read` (rejects unknown keys, ranges, versions, bad LUT data, over 8 MiB), `apply` (local passes, vignette, LUT, grain); `from-preset`/`apply` CLI |
 
 The pipeline works in ProPhoto primaries. Stages pass sRGB-curve encoded values, in Lightroom's order:
 Whites/Blacks (with exposure), saturation, vibrance + HSL (or B&W), then contrast, parametric, point
@@ -232,6 +233,8 @@ Lightroom quirks:
   - `finish.apply_settings` runs every spatial pass in a preset in Lightroom's order (NR,
     Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, vignette, grain) on the encoded
     image (`finish.render_preset` orders them around the look as above).
+- Task 8 is done: `colorlab.fsim` (ee95db8). All 59 private presets round-trip and render like
+  `render_preset` (mean ΔE median 0.035, worst 0.097); a 33-point look file is about 280 KiB.
 - Biggest single-slider gaps:
   - Temperature −100 1.5, Temperature +100 1.1, Tint ±100 1.0 (the 12 WB bakes are 0.70).
   - Vibrance −100 0.82–0.87 (`pipeline.NEGATIVE_VIBRANCE_DARKEN` 0.88, from 1.45) and Saturation +100
@@ -252,7 +255,6 @@ Lightroom quirks:
   - 6b's gaps: Dehaze +100 (1.60: lightness inside flat areas, needs an edge-aware large-scale haze
     map), Saturation − with Vibrance − (needs a bake), and the whole-preset gaps above.
   - 7: check against the Fuji DNG presets' embedded Lightroom previews.
-  - 8: the `.fsim.json` look format.
   - 9: the CLI.
   - After that, the Android app.
   - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own

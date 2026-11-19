@@ -2,8 +2,8 @@
 
 **Source plan:** the Phase 1 "Python color lab" plan agreed in the planning session.
 This report covers tasks 1–5 (repo setup, color spaces, LUTs, the RGBTable decoder and
-the preset reader) and task 6a (global color pipeline). Still open: spatial effects (6b), checks against Lightroom renders (7),
-`.fsim` (8) and the command-line tool (9).
+the preset reader) and task 6a (global color pipeline). Still open: checks against Lightroom renders (7) and the command-line tool (9); the `.fsim.json`
+look format (8) is done.
 
 ## User journeys
 
@@ -1743,6 +1743,51 @@ The worst preset's colour sliders under its built-in look (`Bright Color Part Lo
 So about 1 ΔE of this gap is an interaction between the look and the colour sliders, which no
 stage-by-stage model (Lightroom's own LUTs included) reproduces. Finding it needs bakes of the look
 with single colour sliders. No code change.
+
+## The `.fsim.json` look format (task 8, `colorlab.fsim`)
+
+Journey: as a photographer, I want a look I made from a preset saved as one open file that the
+camera can apply live, so that I don't need Lightroom or the preset to use it.
+
+A look file is one JSON object (version 1):
+
+| Key | Content |
+|---|---|
+| `format`, `version` | `"fsim"`, `1`; readers reject anything else |
+| `name` | 1–80 characters; `description`, `author`, `license` are optional text |
+| `color.lut` | `size` (2–65) and `data`: base64 of `size³ × 3` little-endian uint16 (0..65535 for 0..1), in `.cube` order (red fastest), sRGB-encoded in and out |
+| `local` | noise reduction, Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, in Lightroom slider units |
+| `vignette`, `grain` | post-crop vignette and grain, the same units |
+
+Settings left out take their defaults, and the writer leaves defaults out. A renderer runs the
+local passes, then the vignette, then the LUT, then the grain, the order that matched Lightroom's
+exports best (`finish.render_preset`). `fsim.apply` is the reference renderer, and
+`python -m colorlab.fsim from-preset|apply` is its CLI.
+
+- **Why a LUT.** The global colour (white balance, tone, HSL, B&W, curves, the look's tables,
+  colour grading) depends only on the look's settings, so it bakes into one 3D LUT, which the
+  app applies in one texture lookup per pixel. The spatial passes depend on the neighbourhood
+  and stay parameters.
+- **Hostile files.** The reader caps the text at 8 MiB and rejects unknown sections or
+  settings, out-of-range, non-finite or non-numeric values (booleans too), fractional vignette
+  styles, bad LUT sizes and LUT data of the wrong length or not base64.
+- **Fidelity.** On all 59 private presets (scene chart at a quarter size), `apply` of the
+  round-tripped look against `render_preset` of the preset: mean ΔE median 0.035, worst 0.097
+  (99.9th percentile median 0.38, worst 4.15, at extreme Hald-like colours where the 33-point
+  LUT's interpolation differs). A 33-point look file is about 280 KiB.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | A look round-trips through its text, defaults left out, the text stable | `test_a_look_from_a_preset_round_trips_through_its_json_text` | PASS |
+| 2 | `apply` equals `render_preset` (2e-4) for spatial-only presets and is within the LUT's interpolation for colour (mean < 0.15) | `test_applying_a_look_matches_the_preset_it_came_from` | PASS |
+| 3 | A look profile's own Highlights/Shadows are folded in | `test_a_look_profiles_own_highlights_and_shadows_are_folded_in` | PASS |
+| 4 | Files and the CLI (from-preset, apply, a missing file exits 1) | `test_files_and_the_command_line` | PASS |
+| 5 | 22 kinds of malformed or hostile documents, oversized text and bad `Look` arguments raise `FsimFormatError` | `test_malformed_looks_are_rejected`, `test_oversized_text_is_rejected_before_parsing`, `test_a_look_needs_a_name_and_a_lut_to_build` | PASS |
+| 6 | Text fields round-trip; file errors name the file | `test_text_fields_round_trip_and_files_name_themselves_in_errors` | PASS |
+| 7 | All private presets round-trip and render like the preset (median < 0.1, worst < 0.5) | `tests/private/test_fsim_private_presets.py` | PASS |
+
+- RED `e3b76b5` (23 fail: cannot import `colorlab.fsim` or `FsimFormatError`), GREEN `ee95db8`
+  (567 pass, 98%; `fsim.py` 100%).
 
 ## Coverage and known gaps
 
