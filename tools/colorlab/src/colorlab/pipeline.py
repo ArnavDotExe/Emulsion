@@ -455,32 +455,36 @@ def _from_scene(scene: np.ndarray, shoulder: response.ExposureShoulder | None = 
 COLOR_KNEE = 0.94
 
 
-def _color_stretch(shoulder: response.ExposureShoulder) -> tuple[Callable, Callable]:
-    """The shoulder's stretch up to :data:`COLOR_KNEE`, then a straight line with its slope there."""
-    knee = np.array(COLOR_KNEE)
-    top = shoulder.stretch(knee)
-    slope = (shoulder.stretch(knee + 1e-7) - shoulder.stretch(knee - 1e-7)) / 2e-7
+def _color_stretch(shoulder: response.ExposureShoulder, knee: float | None = None) -> tuple[Callable, Callable]:
+    """The shoulder's stretch up to ``knee`` (default :data:`COLOR_KNEE`), then a straight line
+    with its slope there."""
+    k = COLOR_KNEE if knee is None else knee
+    top = shoulder.stretch(np.array(k))
+    slope = (shoulder.stretch(np.array(k + 1e-7)) - shoulder.stretch(np.array(k - 1e-7))) / 2e-7
 
     def forward(e: np.ndarray) -> np.ndarray:
-        return np.where(e <= COLOR_KNEE, shoulder.stretch(np.minimum(e, COLOR_KNEE)), top + slope * (e - COLOR_KNEE))
+        return np.where(e <= k, shoulder.stretch(np.minimum(e, k)), top + slope * (e - k))
 
     def inverse(y: np.ndarray) -> np.ndarray:
-        return np.where(y <= top, shoulder.rolloff(np.minimum(y, top)), COLOR_KNEE + (y - top) / slope)
+        return np.where(y <= top, shoulder.rolloff(np.minimum(y, top)), k + (y - top) / slope)
 
     return forward, inverse
 
 
-def _to_color_scene(enc: np.ndarray, shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
+def _to_color_scene(enc: np.ndarray, shoulder: response.ExposureShoulder | None = None,
+                    knee: float | None = None) -> np.ndarray:
     """Working-encoded values -> the scene scale of saturation, vibrance, HSL and B&W: that of
-    :func:`_to_scene`, with a finite top (:data:`COLOR_KNEE`). ``shoulder`` replaces the exposure's."""
-    forward, _ = _color_stretch(shoulder or _response().exposure)
+    :func:`_to_scene`, with a finite top (``knee``, default :data:`COLOR_KNEE`). ``shoulder``
+    replaces the exposure's."""
+    forward, _ = _color_stretch(shoulder or _response().exposure, knee)
     return rgb_tone(cs.decode(enc, WORKING_TRANSFER),
                     lambda x: forward(cs.encode(np.maximum(x, 0.0), WORKING_TRANSFER)))
 
 
-def _from_color_scene(scene: np.ndarray, shoulder: response.ExposureShoulder | None = None) -> np.ndarray:
+def _from_color_scene(scene: np.ndarray, shoulder: response.ExposureShoulder | None = None,
+                      knee: float | None = None) -> np.ndarray:
     """The inverse of :func:`_to_color_scene`."""
-    _, inverse = _color_stretch(shoulder or _response().exposure)
+    _, inverse = _color_stretch(shoulder or _response().exposure, knee)
     lin = rgb_tone(np.maximum(scene, 0.0), lambda y: cs.decode(np.maximum(inverse(y), 0.0), WORKING_TRANSFER))
     return cs.encode(np.maximum(lin, 0.0), WORKING_TRANSFER)
 
@@ -856,9 +860,15 @@ def _hexcone_hue(x: np.ndarray, hi: np.ndarray, gap: np.ndarray) -> np.ndarray:
 
 #: a B&W band slider at -100 sets its gray weight to this; at +100 it adds this to the default
 _MIXER_DOWN, _MIXER_UP = -2.0, 2.25
+#: from process version 15.4 a band's slider fades as (its linear weight) ** this away from its
+#: centre, and the B&W scene scale's straight top starts at this knee (fitted to 9 PV 15.4 bakes)
+BW_BAND_FALLOFF_PV15 = 1.6
+BW_KNEE_PV15 = 0.86
+_EYE8 = np.eye(8)
 
 
-def grayscale(enc: np.ndarray, mixer: Mapping[str, float] | None = None) -> np.ndarray:
+def grayscale(enc: np.ndarray, mixer: Mapping[str, float] | None = None,
+              process_version: tuple[int, int] = (0, 0)) -> np.ndarray:
     """Black-and-white conversion, as Lightroom's B&W mixer; ``mixer`` moves each band (-100..100).
 
     Runs on the HSL stage's scene scale (units of ``K_SCENE``). Each color's gray lies on the line
@@ -869,17 +879,28 @@ def grayscale(enc: np.ndarray, mixer: Mapping[str, float] | None = None) -> np.n
     perceptual curve (:func:`_dark_encode`) so it darkens smoothly instead of going negative.
     Grays stay as they are.
 
-    Lightroom builds the table differently from process version 15.4; that table isn't
-    reconstructed yet, so every version uses this one.
+    From process version 15.4 (measured from its bakes) the neutral mix is the same, but each
+    band's move from its default fades as its linear weight to the power
+    :data:`BW_BAND_FALLOFF_PV15`, and the scene scale's straight top starts at
+    :data:`BW_KNEE_PV15`, which darkens bright saturated colours.
     """
     sliders = _band_values("mixer", mixer, -100, 100) / 100
     enc = _as_rgb(enc)
-    table = _band_table(_mixer_weight(sliders, _mixer_defaults()), smooth=False)
-    lo, hi, h, gap = _to_mmh(_to_color_scene(enc) * K_SCENE, smooth=False)
-    w = _lookup(table, h)
+    defaults = _mixer_defaults()
+    weights = _mixer_weight(sliders, defaults)
+    pv15 = process_version >= (15, 4)
+    knee = BW_KNEE_PV15 if pv15 else None
+    lo, hi, h, gap = _to_mmh(_to_color_scene(enc, knee=knee) * K_SCENE, smooth=False)
+    if pv15:
+        w = _lookup(_band_table(defaults, smooth=False), h)
+        for i in np.flatnonzero(weights != defaults):
+            reach = np.clip(_lookup(_band_table(_EYE8[i], smooth=False), h), 0.0, 1.0)
+            w = w + (weights[i] - defaults[i]) * reach ** BW_BAND_FALLOFF_PV15
+    else:
+        w = _lookup(_band_table(weights, smooth=False), h)
     dark = _dark_decode(_dark_encode(lo) + (_dark_encode(hi) - _dark_encode(lo)) * w)
     gray = np.clip(np.where(w >= 0, lo + gap * w, dark), 0.0, 1.0)
-    out = _from_color_scene(np.repeat(gray[..., None], 3, axis=-1) / K_SCENE)
+    out = _from_color_scene(np.repeat(gray[..., None], 3, axis=-1) / K_SCENE, knee=knee)
     return np.where((gap > 0)[..., None], out, enc)
 
 
@@ -1051,7 +1072,7 @@ def _stage_saturation(s: _Sliders, enc: np.ndarray) -> np.ndarray:
 def _stage_grayscale(s: _Sliders, enc: np.ndarray) -> np.ndarray:
     if s.text("ConvertToGrayscale").lower() != "true":
         return enc
-    return grayscale(enc, s.bands("GrayMixer"))
+    return grayscale(enc, s.bands("GrayMixer"), process_version=_process_version(s.preset))
 
 
 ENCODED_STAGES: dict[str, Callable[[_Sliders, np.ndarray], np.ndarray]] = {
