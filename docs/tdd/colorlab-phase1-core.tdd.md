@@ -1989,6 +1989,60 @@ Below the knee and at a band's centre it is PV 11's mixer.
   uses darker test colours for the centre check: the bright one's output gray sat above the new
   knee. GREEN: 591 public tests pass, 98%; `pipeline.py` 99%.
 
+## Highlights and Shadows adapt to the image (`local_contrast.image_strength`)
+
+Journey: as a photographer, I want a look's Highlights and Shadows to act on my photo as
+Lightroom's do, so a dark or a bright frame isn't over- or under-corrected.
+
+The photo strength kit (`out/photo-strength-kit`, 10 more photos from the mobile DNG presets at
+identity and Highlights/Shadows ±50, PV 15.4) was exported and collected
+(`out/photo-strength-exports`, 50 of 50, 16-bit sRGB). With the first 5 photos that makes 15.
+For each, the least-squares scale `k` of our chart-fitted change against Lightroom's change is
+nearly the same at −50 and +50 (correlation 0.8–0.95 within a photo). Highlights' `k` runs
+0.15–0.89, Shadows' 0.18–2.28, and they move in opposite directions with the photo's
+brightness.
+
+Single and paired image statistics were tried as predictors of log `k` (leave-one-out over the 15
+photos; the scene chart, where the tables were fitted, should give `k` = 1):
+
+| Slider | Best statistic | LOO rms of log k (spread before) | Predicts on the scene chart |
+|---|---|---|---|
+| Highlights | 5th percentile of encoded luminance (the black point) | 0.339 (0.464) | 0.94 |
+| Shadows | mean linear luminance | 0.286 (0.634) | 0.87 |
+
+Mean, median, log-average and linear mean all fit Highlights far worse (photo dE 2.06–2.82).
+Anchored at the scene chart (`k` = 1 there) with the exponent fitted leave-one-out, mean dE of the
+60 photo exports, ours against Lightroom:
+
+| Strength | Highlights ±50 | Shadows ±50 | All |
+|---|---|---|---|
+| the chart's (k = 1) | 2.68 | 1.61 | 2.14 (worst 5.91) |
+| `image_strength` | 0.93 | 0.98 | 0.96 (worst 1.81) |
+| each photo's own best k | | | 0.71 (worst 1.20) |
+
+`image_strength(img)` gives `(black / 0.0304) ** −0.57` and `(mean / 0.296) ** 1.16`, with the
+black point clamped to 0.02–0.5 and the mean to 0.02–0.8 (the range the photos covered).
+`highlights_shadows(..., strength=)` scales each slider's change; its default stays the chart's,
+so Dehaze's internal use is unchanged. `finish.local_passes` (and so `apply_settings`,
+`render_preset` and `fsim.apply`) passes the image's own strength. For the camera the two
+statistics are one downsampled histogram per frame.
+
+The whole mobile DNG presets against Lightroom's embedded previews (task 7): median 2.60 -> 1.96,
+mean 2.64 -> 2.07 (worst 4.19 unchanged); 3 of the 15 get slightly worse (by 0.08–0.21). They
+are renders of the same 15 photos, but of each preset's full settings.
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | The strength is 1 on the scene chart, Highlights' falls with the black point, Shadows' rises with brightness, and both are bounded | `test_image_strength_is_one_on_the_scene_chart_and_follows_black_point_and_brightness` | PASS |
+| 2 | `strength` scales each slider's change on its own; (1, 1) is the old result; a negative strength raises | `test_highlights_shadows_scales_each_sliders_change_by_its_strength` | PASS |
+| 3 | `apply_settings` uses the image's own strength | `test_apply_settings_adapts_highlights_and_shadows_to_the_image` | PASS |
+| 4 | The 60 photo exports average under 1.0, worst under 2.0 (local) | `tests/private/test_photo_strength.py` | PASS |
+| 5 | The DNG presets: median under 2.05, mean under 2.15 (local) | `tests/private/test_dng_previews.py` | PASS |
+
+- RED `4ae5794` (3 fail: cannot import `image_strength`; `highlights_shadows` takes no
+  `strength`; the local photo test 2.14 against < 1.0). GREEN updates two `render_preset` tests
+  whose expected images used the chart's strength.
+
 ## Coverage and known gaps
 
 - 96.4% public / 97.0% including private tests. Uncovered: a few defensive branches

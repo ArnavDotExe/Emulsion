@@ -77,7 +77,7 @@ pytest --cov --ignore=tests/private  # what CI runs
 | `spatial_calibration` | Spatial calibration kit: 70 one-slider chart images (scene, levels, checker) with embedded sidecar XMP for highlights/shadows, clarity, texture, dehaze, sharpening, grain, noise reduction and vignette; `kit --followup` (a `flats` chart, slider pairs, masking, PV 15.4 local tone) and `--photos DIR` (`photo_variants`: Highlights/Shadows on real photos); `collect` checks and copies the exports |
 | `bake` | Lightroom bake kits (presets + Hald TIFFs with an embedded sidecar-style XMP, which Lightroom auto-applies on import) and `collect` of exports into `.cube` |
 | `film` | Halation (scatter + bounces, scene-anchored highlight boost) and particle grain, sized in µm on the film; ported from spektrafilm and darktable (credited in the header); `apply` CLI for TIFFs |
-| `local_contrast` | Highlights/Shadows (a tone table over the pixel and a Gaussian base of width/32, per amount, in `data/local_tone.json`), Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr) and Dehaze (a monotone local tone table and a linear-light color gain, mixed for positive amounts with a dark channel prior), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
+| `local_contrast` | Highlights/Shadows (a tone table over the pixel and a Gaussian base of width/32, per amount, in `data/local_tone.json`, scaled per image by `image_strength`: black point and mean brightness), Clarity (midtone-weighted detail around a Gaussian base of width/96, on Y^(1/2.2)) and Texture (16 px guided filter on Y, Cb, Cr) and Dehaze (a monotone local tone table and a linear-light color gain, mixed for positive amounts with a dark channel prior), fitted to Lightroom's spatial exports; also `local_laplacian` (from darktable, credited) and `guided_filter`; `apply` CLI |
 | `finish` | Vignette (measured mask profile plus a value × weight table per amount; midpoint, feather, roundness, styles, highlights), sharpening (clamped unsharp mask on luma, fixed in pixels), noise reduction (guided filter on Y, Gaussian on CbCr), Lightroom-statistic grain (seeded `G_s − b G_2s` noise, frame-relative size), all in `data/finish.json`; `apply_settings` runs every spatial pass a preset names in Lightroom's order; `render_preset` runs local passes and vignette before the look, grain after, with the look profile's Highlights/Shadows folded in (`spatial_settings`); `apply` CLI |
 | `preset_check` | Whole-preset check: `kit` writes full preset copies (geometry neutralized) on the scene chart as embedded sidecars; `compare` scores Lightroom's exports against `finish.render_preset` (global, spatial passes after or before the look, blurred, and on Lightroom's baked LUTs), saving its JSON per preset and resuming from it |
 | `metrics` | sRGB → Lab, CIEDE2000 |
@@ -236,11 +236,9 @@ Lightroom quirks:
     Highlights/Shadows, Dehaze, Texture, Clarity, sharpening, vignette, grain) on the encoded
     image (`finish.render_preset` orders them around the look as above).
 - Task 7 is done: the 15 mobile DNG presets against their embedded Lightroom previews (SubIFD 0 is
-  the photo, already sRGB-encoded; SubIFD 1 Lightroom's render) score median 2.60 / mean 2.64
-  (unedited 9.53 / 11.34; `tests/private/test_dng_previews.py`). What's left is Highlights − on
-  real photos: removing it helps 5 of 12, bright photos want 0–50% of it and dark ones all of it,
-  so Lightroom's Highlights is likely image-adaptive. Not the process version or the slider
-  order. Needs bakes of Highlights/Shadows on several photos at PV 15.4.
+  the photo, already sRGB-encoded; SubIFD 1 Lightroom's render) score median 1.96 / mean 2.07
+  (unedited 9.53 / 11.34; `tests/private/test_dng_previews.py`), after Highlights/Shadows got
+  their per-image strength (from 2.60 / 2.64).
 - Task 9 is done: the `colorlab` command (`colorlab.cli`, 3aa2f6b).
 - Task 8 is done: `colorlab.fsim` (ee95db8). All 59 private presets round-trip and render like
   `render_preset` (mean ΔE median 0.035, worst 0.097); a 33-point look file is about 280 KiB.
@@ -267,10 +265,10 @@ Lightroom quirks:
     amounts). Inside flat areas Clarity + and Dehaze + are off (flats 4.06, 3.60); PV 15.4
     Whites + is a shape gap (+25 0.16, +50 0.59); the built-in look's gap is the look, not the
     colour sliders; Masking isn't modelled (Masking 100 0.21).
-  - The next Lightroom session: `out/photo-strength-kit` (50 images: 10 more photos ×
-    identity, Highlights/Shadows ±50 at PV 15.4; `out/BAKE_SESSION.txt`), to find what sets the
-    per-image strength. Collect:
-    `colorlab spatial collect ../../out/photo-strength-kit/exports ../../out/photo-strength-kit ../../out/photo-strength-exports`.
+  - The photo strength kit is baked (`out/photo-strength-exports`, 15 photos in all). Highlights'
+    strength follows the black point (5th percentile of encoded luminance) ^ −0.57, Shadows'
+    the mean linear luminance ^ 1.16, both 1 on the scene chart (`local_contrast.image_strength`):
+    photo exports 2.14 -> 0.96, DNG presets against their previews median 2.60 -> 1.96.
   - After that, the Android app.
   - Low priority, after the app's core: Fuji in-camera film simulations (shipped under our own
     look names, no camera-maker trademarks).
